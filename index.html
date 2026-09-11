@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sistem Absensi Wajah Wi-Fi Kantor</title>
+  <!-- Load Face-API.js CDN -->
+  <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+  <style>
+    * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    body { background-color: #eef2f5; margin: 0; padding: 20px; text-align: center; }
+    .card { background: white; max-width: 540px; margin: 0 auto; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+    h2 { color: #2c3e50; margin-top: 0; }
+    .badge-info { background: #e3f2fd; color: #0d47a1; padding: 8px 12px; border-radius: 6px; font-size: 13px; display: inline-block; margin-bottom: 15px; }
+    #video-wrapper { position: relative; display: inline-block; width: 100%; max-width: 480px; height: 360px; background: #111; border-radius: 10px; overflow: hidden; margin-bottom: 15px; }
+    video { width: 100%; height: 100%; object-fit: cover; }
+    canvas { position: absolute; top: 0; left: 0; }
+    .btn-group { display: flex; gap: 10px; justify-content: center; margin-top: 10px; }
+    button { flex: 1; padding: 12px; font-size: 15px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; }
+    .btn-in { background-color: #2ec4b6; color: white; }
+    .btn-out { background-color: #e71d36; color: white; }
+    .btn-reg { background-color: #ff9f1c; color: white; margin-top: 10px; width: 100%; }
+    button:hover { opacity: 0.9; }
+    button:disabled { background-color: #ccc; cursor: not-allowed; }
+    #status { margin-top: 15px; padding: 10px; border-radius: 6px; font-weight: 600; font-size: 14px; background: #f8f9fa; color: #495057; }
+    .nav-tabs { display: flex; border-bottom: 2px solid #ddd; margin-bottom: 20px; }
+    .tab { flex: 1; padding: 10px; cursor: pointer; font-weight: bold; color: #6c757d; }
+    .tab.active { border-bottom: 3px solid #007bff; color: #007bff; }
+    .form-group { text-align: left; margin-bottom: 12px; }
+    .form-group label { display: block; font-size: 13px; margin-bottom: 5px; color: #333; }
+    .form-group select { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h2>Absensi Wajah Kantor</h2>
+    <div class="badge-info" id="ip-info">Mengecek koneksi IP Wi-Fi...</div>
+
+    <div class="nav-tabs">
+      <div class="tab active" onclick="switchTab('absen')">Absen Masuk / Keluar</div>
+      <div class="tab" onclick="switchTab('register')">Registrasi Wajah Baru</div>
+    </div>
+
+    <div id="video-wrapper">
+      <video id="video" autoplay muted playsinline></video>
+    </div>
+
+    <!-- TAB ABSENSI -->
+    <div id="tab-absen">
+      <div class="btn-group">
+        <button id="btn-masuk" class="btn-in" onclick="prosesAbsen('Masuk')" disabled>Absen Masuk</button>
+        <button id="btn-keluar" class="btn-out" onclick="prosesAbsen('Keluar')" disabled>Absen Keluar</button>
+      </div>
+    </div>
+
+    <!-- TAB REGISTRASI -->
+    <div id="tab-register" style="display: none;">
+      <div class="form-group">
+        <label for="emp-select">Pilih Karyawan:</label>
+        <select id="emp-select">
+          <option value="">-- Memuat Karyawan --</option>
+        </select>
+      </div>
+      <button id="btn-register" class="btn-reg" onclick="prosesRegistrasi()" disabled>Daftarkan Wajah</button>
+    </div>
+
+    <div id="status">Menginisialisasi sistem...</div>
+  </div>
+
+  <script>
+    // MASUKKAN URL GOOGLE APPS SCRIPT WEB APP ANDA DI SINI
+    const GAS_URL = "URL_DEPLOY_APPS_SCRIPT_ANDA";
+
+    let currentIP = "";
+    let employeesData = [];
+    let faceMatcher = null;
+
+    async function init() {
+      // 1. Dapatkan IP Publik User saat ini
+      try {
+        const ipRes = await fetch("https://api.ipify.org?format=json");
+        const ipData = await ipRes.json();
+        currentIP = ipData.ip;
+        document.getElementById("ip-info").innerText = "IP Anda: " + currentIP;
+      } catch (e) {
+        document.getElementById("ip-info").innerText = "Gagal membaca IP Wi-Fi.";
+      }
+
+      // 2. Load Model AI Face-API.js
+      updateStatus("Memuat model AI Pengenalan Wajah...");
+      const MODEL_URL = "https://justadudewhohacks.github.io/face-api.js/models";
+      try {
+        await Promise.all([
+          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+        ]);
+        updateStatus("Model AI Siap.");
+      } catch (err) {
+        updateStatus("Gagal memuat model AI wajah.");
+        return;
+      }
+
+      // 3. Jalankan Kamera Stream
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+        document.getElementById("video").srcObject = stream;
+      } catch (err) {
+        updateStatus("Kamera tidak dapat diakses.");
+        return;
+      }
+
+      // 4. Load Data Karyawan dari Google Sheets
+      await loadEmployees();
+    }
+
+    async function loadEmployees() {
+      updateStatus("Mengambil data karyawan dari database...");
+      try {
+        const res = await fetch(GAS_URL, {
+          method: "POST",
+          body: JSON.stringify({ action: "getEmployees" })
+        });
+        const data = await res.json();
+
+        if (data.status === "success") {
+          employeesData = data.employees;
+          
+          // Populate Dropdown Registrasi
+          const select = document.getElementById("emp-select");
+          select.innerHTML = '<option value="">-- Pilih Karyawan --</option>';
+          employeesData.forEach(e => {
+            select.innerHTML += `<option value="${e.id}">${e.name} (${e.role})</option>`;
+          });
+
+          // Build Matcher Wajah
+          buildFaceMatcher();
+
+          document.getElementById("btn-masuk").disabled = false;
+          document.getElementById("btn-keluar").disabled = false;
+          document.getElementById("btn-register").disabled = false;
+          updateStatus("Sistem Siap! Silakan berdiri di depan kamera.");
+        } else {
+          updateStatus("Gagal mengambil data karyawan.");
+        }
+      } catch (e) {
+        updateStatus("Kesalahan koneksi ke server database.");
+      }
+    }
+
+    function buildFaceMatcher() {
+      const labeledDescriptors = [];
+      employeesData.forEach(emp => {
+        if (emp.descriptor && emp.descriptor.length > 0) {
+          const descArray = new Float32Array(emp.descriptor);
+          labeledDescriptors.push(new faceapi.LabeledFaceDescriptors(`${emp.id}#${emp.name}`, [descArray]));
+        }
+      });
+
+      if (labeledDescriptors.length > 0) {
+        faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.55);
+      }
+    }
+
+    async function detectFace() {
+      const video = document.getElementById("video");
+      const detection = await faceapi.detectSingleFace(video)
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+      return detection;
+    }
+
+    async function prosesAbsen(jenisAbsen) {
+      updateStatus("Memindai wajah untuk absensi...");
+      const detection = await detectFace();
+
+      if (!detection) {
+        alert("Wajah tidak terdeteksi! Pastikan pencahayaan cukup dan wajah terlihat jelas.");
+        updateStatus("Wajah tidak terdeteksi.");
+        return;
+      }
+
+      if (!faceMatcher) {
+        alert("Belum ada data wajah karyawan terdaftar di sistem.");
+        updateStatus("Data wajah belum terdaftar.");
+        return;
+      }
+
+      const match = faceMatcher.findBestMatch(detection.descriptor);
+      if (match.label === "unknown") {
+        alert("Wajah Anda tidak terdeteksi di database karyawan!");
+        updateStatus("Wajah tidak dikenali.");
+        return;
+      }
+
+      const [empId, empName] = match.label.split("#");
+      updateStatus(`Wajah terdeteksi: ${empName}. Mengirim data...`);
+
+      // Kirim data absen ke Apps Script
+      try {
+        const response = await fetch(GAS_URL, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "absent",
+            employeeId: empId,
+            employeeName: empName,
+            type: jenisAbsen,
+            ip: currentIP
+          })
+        });
+
+        const result = await response.json();
+        alert(result.message);
+        updateStatus(result.message);
+      } catch (err) {
+        alert("Gagal terhubung ke backend.");
+        updateStatus("Gagal mengirim absensi.");
+      }
+    }
+
+    async function prosesRegistrasi() {
+      const empId = document.getElementById("emp-select").value;
+      if (!empId) {
+        alert("Pilih karyawan terlebih dahulu!");
+        return;
+      }
+
+      const selectedEmp = employeesData.find(e => e.id === empId);
+
+      updateStatus(`Memindai wajah untuk ${selectedEmp.name}...`);
+      const detection = await detectFace();
+
+      if (!detection) {
+        alert("Wajah tidak terdeteksi! Coba lagi.");
+        updateStatus("Gagal memindai wajah.");
+        return;
+      }
+
+      const descriptorArray = Array.from(detection.descriptor);
+
+      updateStatus(`Menyimpan vektor wajah ${selectedEmp.name}...`);
+      try {
+        const response = await fetch(GAS_URL, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "registerFace",
+            employeeId: empId,
+            employeeName: selectedEmp.name,
+            descriptor: descriptorArray
+          })
+        });
+
+        const result = await response.json();
+        alert(result.message);
+        updateStatus(result.message);
+
+        // Refresh data karyawan lokal setelah registrasi
+        await loadEmployees();
+      } catch (err) {
+        alert("Gagal menyimpan data wajah.");
+        updateStatus("Error saat pendaftaran wajah.");
+      }
+    }
+
+    function switchTab(tabName) {
+      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      if (tabName === "absen") {
+        document.querySelectorAll(".tab")[0].classList.add("active");
+        document.getElementById("tab-absen").style.display = "block";
+        document.getElementById("tab-register").style.display = "none";
+      } else {
+        document.querySelectorAll(".tab")[1].classList.add("active");
+        document.getElementById("tab-absen").style.display = "none";
+        document.getElementById("tab-register").style.display = "block";
+      }
+    }
+
+    function updateStatus(text) {
+      document.getElementById("status").innerText = text;
+    }
+
+    window.onload = init;
+  </script>
+</body>
+</html>
