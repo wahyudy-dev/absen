@@ -281,7 +281,7 @@
 
                         <div>
                             <label class="block text-slate-400 mb-1 font-medium">URL Web App Google Sheets (GAS)</label>
-                            <input type="url" id="cfgGasUrl" placeholder="https://script.google.com/macros/s/AKfycbzZpc2NUbf7AHpqeDG8kVBWLGYcDLRro-w0R1RqwfelWhBj8jsTBuJRsx8bA9rWqBGqFw/exec" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500">
+                            <input type="url" id="cfgGasUrl" placeholder="https://script.google.com/macros/s/.../exec" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500">
                         </div>
 
                         <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 rounded-xl transition flex items-center justify-center gap-2">
@@ -515,7 +515,7 @@
 
                 <div class="pt-2 flex items-center justify-end gap-2">
                     <button type="button" onclick="closeLoginModal()" class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-medium">Batal</button>
-                    <button type="submit" class="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold">Masuk Admin</button>
+                    <button type="submit" id="btnSubmitLogin" class="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold">Masuk Admin</button>
                 </div>
             </form>
         </div>
@@ -1150,14 +1150,11 @@
            ========================================================================== */
         function toggleAdminView() {
             if (!appState.isAdminLoggedIn) {
-                // Tampilkan info kredensial default HANYA jika admin belum pernah
-                // menggantinya -- membantu kasus paling umum "tidak bisa login"
-                // yaitu admin lupa/tidak tahu kredensial defaultnya.
                 const hintEl = document.getElementById('loginDefaultHint');
-                if (appState.adminCreds.username === 'admin' && appState.adminCreds.password === 'password123') {
-                    hintEl.innerText = 'Default: admin / password123 (segera ganti setelah login)';
+                if (!appState.settings.gasUrl) {
+                    hintEl.innerText = 'Default: admin / password123 (atur URL GAS agar akun tersimpan di Spreadsheet)';
                 } else {
-                    hintEl.innerText = '';
+                    hintEl.innerText = 'Login diverifikasi ke sheet "Users" di Spreadsheet Anda.';
                 }
                 document.getElementById('modalAdminLogin').classList.remove('hidden');
             } else {
@@ -1165,21 +1162,48 @@
             }
         }
 
-        function handleAdminLogin(e) {
+        async function handleAdminLogin(e) {
             e.preventDefault();
-            // PERBAIKAN: trim() menghilangkan spasi tak sengaja di awal/akhir
-            // (sering terjadi karena auto-fill browser atau tidak sengaja
-            // menekan spasi di keyboard HP) yang membuat username/password
-            // terlihat benar padahal gagal dicocokkan secara persis (strict ===).
             const u = document.getElementById('loginUser').value.trim();
             const p = document.getElementById('loginPass').value.trim();
+            const btnSubmit = document.getElementById('btnSubmitLogin');
+            const errorBox = document.getElementById('loginError');
+            errorBox.classList.add('hidden');
 
-            if (u === appState.adminCreds.username && p === appState.adminCreds.password) {
-                appState.isAdminLoggedIn = true;
-                closeLoginModal();
-                switchAdminUI(true);
+            // PERBAIKAN: sebelumnya kredensial admin hanya dicocokkan ke
+            // appState.adminCreds yang tersimpan di localStorage BROWSER INI SAJA.
+            // Karena itu, admin yang login/ganti password di perangkat lain (mis. HP)
+            // tidak akan bisa login dengan kredensial yang sama di komputer ini.
+            // Sekarang, jika URL GAS sudah diatur, verifikasi dilakukan ke sheet
+            // "Users" di Spreadsheet -- satu sumber kebenaran untuk semua perangkat.
+            if (appState.settings.gasUrl) {
+                btnSubmit.disabled = true;
+                btnSubmit.innerText = 'Memeriksa...';
+                try {
+                    await postToBackend('adminLogin', { username: u, password: p });
+                    appState.isAdminLoggedIn = true;
+                    appState.adminCreds.username = u;
+                    appState.adminCreds.password = p;
+                    closeLoginModal();
+                    switchAdminUI(true);
+                } catch (err) {
+                    errorBox.innerText = err.message || 'Username atau password salah!';
+                    errorBox.classList.remove('hidden');
+                } finally {
+                    btnSubmit.disabled = false;
+                    btnSubmit.innerText = 'Masuk Admin';
+                }
             } else {
-                document.getElementById('loginError').classList.remove('hidden');
+                // Belum ada URL GAS -> pakai kredensial default bawaan supaya admin
+                // tetap bisa masuk untuk mengatur URL GAS pertama kalinya.
+                if (u === appState.adminCreds.username && p === appState.adminCreds.password) {
+                    appState.isAdminLoggedIn = true;
+                    closeLoginModal();
+                    switchAdminUI(true);
+                } else {
+                    errorBox.innerText = 'Username atau password salah! (Atur dulu URL GAS agar bisa pakai akun dari Spreadsheet)';
+                    errorBox.classList.remove('hidden');
+                }
             }
         }
 
@@ -1251,7 +1275,7 @@
             }
         }
 
-        function updateAdminCredentials(e) {
+        async function updateAdminCredentials(e) {
             e.preventDefault();
             const newU = document.getElementById('newAdminUser').value.trim();
             const newP = document.getElementById('newAdminPass').value;
@@ -1262,13 +1286,37 @@
                 return;
             }
 
-            appState.adminCreds.username = newU;
-            appState.adminCreds.password = newP;
-            // PERBAIKAN: sebelumnya kredensial baru hanya ada di variabel JS dan
-            // kembali ke admin/password123 setiap halaman di-refresh.
-            saveAppConfigToLocalStorage();
-            alert('Kredensial Login Admin berhasil diperbarui!');
-            document.getElementById('formAdminCreds').reset();
+            // PERBAIKAN: sebelumnya kredensial baru hanya disimpan ke localStorage
+            // browser ini, sehingga tidak berlaku di perangkat/browser lain.
+            // Sekarang wajib tersinkron ke sheet "Users" di Spreadsheet agar
+            // berlaku sama di semua perangkat.
+            if (!appState.settings.gasUrl) {
+                alert('Atur dulu URL Web App GAS di form Pengaturan Sistem (di atas), lalu klik Simpan Pengaturan, sebelum mengubah kredensial admin -- supaya perubahan ini benar-benar tersimpan di Spreadsheet dan berlaku di semua perangkat.');
+                return;
+            }
+
+            const btnSubmit = e.target.querySelector('button[type="submit"]');
+            btnSubmit.disabled = true;
+            btnSubmit.innerText = 'Menyimpan ke Spreadsheet...';
+
+            try {
+                await postToBackend('updateAdminCredentials', {
+                    currentUsername: appState.adminCreds.username,
+                    newUsername: newU,
+                    newPassword: newP
+                });
+                appState.adminCreds.username = newU;
+                appState.adminCreds.password = newP;
+                saveAppConfigToLocalStorage();
+                alert('Kredensial Login Admin berhasil diperbarui & tersimpan di Spreadsheet!');
+                document.getElementById('formAdminCreds').reset();
+            } catch (err) {
+                alert('Gagal memperbarui kredensial admin: ' + err.message);
+            } finally {
+                btnSubmit.disabled = false;
+                btnSubmit.innerHTML = '<i data-lucide="shield-alert" class="w-4 h-4"></i><span>Perbarui Login Admin</span>';
+                lucide.createIcons();
+            }
         }
 
         /* ==========================================================================
@@ -1405,7 +1453,7 @@
  * 1. Di bagian atas editor Apps Script ini, pilih fungsi "setupDatabase".
  * 2. Klik tombol ▶ RUN (Jalankan).
  * 3. Berikan izin akses (Review Permissions -> Choose Account -> Advanced -> Go to Script -> Allow).
- * 4. Database sheet (Absensi, Karyawan, Pengaturan) akan otomatis dibuat & diformat!
+ * 4. Database sheet (Absensi, Karyawan, Pengaturan, Users) akan otomatis dibuat & diformat!
  * ==============================================================================
  */
 
@@ -1434,19 +1482,30 @@ function setupDatabase() {
     sheetPengaturan.appendRow(["toleransiMenit", 15]);
     sheetPengaturan.appendRow(["officeSubnet", "192.168.1"]);
   }
+
+  // 4. Inisialisasi Sheet Users (kredensial login admin)
+  // Sebelumnya kredensial admin hanya disimpan di localStorage browser
+  // masing-masing perangkat, sehingga admin yang login/ganti password di HP
+  // tidak akan bisa login dengan kredensial yang sama di komputer lain.
+  // Dengan disimpan di sini, kredensial admin berlaku sama di semua perangkat.
+  var sheetUsers = getOrCreateSheet("Users", ["Username", "Password", "Role", "Terakhir Diubah"]);
+  var rowsUsers = sheetUsers.getDataRange().getValues();
+  if (rowsUsers.length <= 1) {
+    sheetUsers.appendRow(["admin", "password123", "Administrator", ""]);
+  }
   
   // Format visual header dan pembekuan baris pertama (Freeze Header)
-  [sheetAbsensi, sheetKaryawan, sheetPengaturan].forEach(function(sh) {
+  [sheetAbsensi, sheetKaryawan, sheetPengaturan, sheetUsers].forEach(function(sh) {
     sh.setFrozenRows(1);
     try {
       sh.autoResizeColumns(1, sh.getLastColumn() || 1);
     } catch(e) {}
   });
   
-  Logger.log("✅ Setup Database Berhasil! Sheet 'Absensi', 'Karyawan', dan 'Pengaturan' telah dibuat.");
+  Logger.log("✅ Setup Database Berhasil! Sheet 'Absensi', 'Karyawan', 'Pengaturan', dan 'Users' telah dibuat.");
   
   try {
-    SpreadsheetApp.getUi().alert("✅ Setup Database Berhasil!\n\nTab 'Absensi', 'Karyawan', dan 'Pengaturan' telah siap digunakan.");
+    SpreadsheetApp.getUi().alert("✅ Setup Database Berhasil!\n\nTab 'Absensi', 'Karyawan', 'Pengaturan', dan 'Users' telah siap digunakan.\n\nLogin admin default: admin / password123");
   } catch (e) {
     // Dipanggil saat di-run dari background trigger
   }
@@ -1521,6 +1580,10 @@ function doPost(e) {
         return processDeleteUser(data);
       case "saveSettings":
         return processSaveSettings(data);
+      case "adminLogin":
+        return processAdminLogin(data);
+      case "updateAdminCredentials":
+        return processUpdateAdminCredentials(data);
       case "getEmployees":
         return responseJSON({ status: "success", data: fetchEmployeesList() });
       case "getLogs":
@@ -1637,6 +1700,62 @@ function processDeleteUser(data) {
   }
 
   return responseJSON({ status: "error", message: "NIP tidak ditemukan dalam database." });
+}
+
+/**
+ * Memverifikasi login admin terhadap sheet 'Users'.
+ * PENTING: fungsi ini hanya dipanggil lewat doPost (bukan doGet), sehingga
+ * password TIDAK PERNAH ikut terekspos lewat request GET publik seperti
+ * action "getInitialData".
+ */
+function processAdminLogin(data) {
+  if (!data || !data.username || !data.password) {
+    return responseJSON({ status: "error", message: "Username dan password wajib diisi!" });
+  }
+
+  var sheet = getOrCreateSheet("Users", ["Username", "Password", "Role", "Terakhir Diubah"]);
+  var rows = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === String(data.username) && String(rows[i][1]) === String(data.password)) {
+      return responseJSON({
+        status: "success",
+        message: "Login berhasil!",
+        role: rows[i][2] || "Administrator"
+      });
+    }
+  }
+
+  return responseJSON({ status: "error", message: "Username atau password salah!" });
+}
+
+/**
+ * Mengganti kredensial admin di sheet 'Users' agar berlaku sama di semua
+ * perangkat/browser (sebelumnya kredensial hanya tersimpan di localStorage
+ * masing-masing browser sehingga tidak konsisten antar perangkat).
+ */
+function processUpdateAdminCredentials(data) {
+  if (!data || !data.newUsername || !data.newPassword) {
+    return responseJSON({ status: "error", message: "Username dan password baru wajib diisi!" });
+  }
+
+  var sheet = getOrCreateSheet("Users", ["Username", "Password", "Role", "Terakhir Diubah"]);
+  var rows = sheet.getDataRange().getValues();
+  var waktuUbah = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
+
+  var targetUsername = data.currentUsername || (rows.length > 1 ? rows[1][0] : "admin");
+
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === String(targetUsername)) {
+      sheet.getRange(i + 1, 1, 1, 2).setValues([[data.newUsername, data.newPassword]]);
+      sheet.getRange(i + 1, 4).setValue(waktuUbah);
+      return responseJSON({ status: "success", message: "Kredensial admin berhasil diperbarui!" });
+    }
+  }
+
+  // Jika akun dengan username tersebut belum ada, buat baris baru
+  sheet.appendRow([data.newUsername, data.newPassword, "Administrator", waktuUbah]);
+  return responseJSON({ status: "success", message: "Akun admin berhasil dibuat!" });
 }
 
 /**
