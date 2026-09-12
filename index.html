@@ -103,12 +103,6 @@
 
             <!-- Navigation Actions -->
             <div class="flex items-center gap-2">
-                <!-- Database Connection Status Badge -->
-                <div id="headerDbBadge" class="hidden md:flex items-center gap-1.5 bg-slate-900 border border-slate-800 text-xs px-3 py-2 rounded-xl">
-                    <span id="headerDbDot" class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
-                    <span id="headerDbText" class="text-slate-400 font-medium">Database: Offline</span>
-                </div>
-
                 <button onclick="openRegistrationModal()" class="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2 rounded-xl text-sm font-medium transition border border-slate-700">
                     <i data-lucide="user-plus" class="w-4 h-4 text-blue-400"></i>
                     <span>Daftar Karyawan</span>
@@ -238,9 +232,9 @@
                     <p class="text-xs text-slate-400 mt-1">Kelola Pengaturan Jam Kerja, Jaringan Wi-Fi, Data Karyawan & Rekap Presensi</p>
                 </div>
                 <div class="flex items-center gap-2">
-                    <button onclick="testAndSyncSpreadsheet()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition shadow-lg shadow-emerald-600/20">
+                    <button onclick="fetchInitialDataFromBackend(true)" class="bg-slate-800 hover:bg-slate-700 text-emerald-400 px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 border border-slate-700 transition">
                         <i data-lucide="refresh-cw" class="w-4 h-4"></i>
-                        <span>Tarik Data Spreadsheet</span>
+                        <span>Sinkron Ulang</span>
                     </button>
                     <button onclick="openScriptCodeModal()" class="bg-slate-800 hover:bg-slate-700 text-blue-400 px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 border border-slate-700 transition">
                         <i data-lucide="code-2" class="w-4 h-4"></i>
@@ -249,25 +243,6 @@
                     <button onclick="logoutAdmin()" class="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition">
                         <i data-lucide="log-out" class="w-4 h-4"></i>
                         <span>Keluar Admin</span>
-                    </button>
-                </div>
-            </div>
-
-            <!-- Quick Database Connection Card Banner -->
-            <div class="glass-card p-4 rounded-2xl border border-blue-500/30 bg-blue-950/20 flex flex-col md:flex-row items-center justify-between gap-4">
-                <div class="flex items-center gap-3 w-full md:w-auto">
-                    <div class="p-3 bg-blue-600/20 rounded-xl text-blue-400 border border-blue-500/30 shrink-0">
-                        <i data-lucide="database" class="w-6 h-6"></i>
-                    </div>
-                    <div>
-                        <h4 class="font-bold text-sm text-white">Status Integrasi Google Spreadsheet API</h4>
-                        <p id="dbConnectionInfoText" class="text-xs text-slate-400">Belum terhubung. Masukkan URL Google Web App untuk mengaktifkan database online.</p>
-                    </div>
-                </div>
-                <div class="flex items-center gap-2 w-full md:w-auto justify-end">
-                    <button onclick="testAndSyncSpreadsheet()" class="w-full md:w-auto bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition">
-                        <i data-lucide="zap" class="w-4 h-4"></i>
-                        <span>Tes Koneksi Database</span>
                     </button>
                 </div>
             </div>
@@ -594,6 +569,8 @@
         /* ==========================================================================
            STATE & CONFIGURATION MANAGEMENT
            ========================================================================== */
+        const LOCAL_STORAGE_KEY = "absensiWajahAppConfig_v1";
+
         let appState = {
             isAdminLoggedIn: false,
             adminCreds: {
@@ -604,179 +581,44 @@
                 jamMasuk: "08:00",
                 jamPulang: "17:00",
                 toleransiMenit: 15,
-                officeSubnet: "192.168.1", // Contoh IP Subnet Wi-Fi Kantor
+                officeSubnet: "192.168.1", // Contoh IP Subnet / IP Publik Wi-Fi Kantor
                 gasUrl: ""
             },
             employees: [],
             logs: [],
-            detectedLocalIp: "192.168.1.105", // Simulated local network IP
-            isWifiValid: true,
-            isDbConnected: false,
+            detectedLocalIp: "-",
+            isWifiValid: false,
             tempFaceDescriptor: null,
             tempPhotoBase64: null,
-            modelsLoaded: false
+            modelsLoaded: false,
+            isSyncing: false
         };
 
         /* ==========================================================================
-           PERSISTENCE & LOCALSTORAGE MANAGEMENT
+           LOCAL PERSISTENCE (agar URL GAS, pengaturan & kredensial tidak hilang
+           setiap kali halaman di-reload -- sebelumnya semua hanya disimpan di
+           variabel JS sehingga hilang total setelah refresh)
            ========================================================================== */
-        function loadSavedState() {
+        function loadAppConfigFromLocalStorage() {
             try {
-                const savedGasUrl = localStorage.getItem('absensi_gas_url');
-                if (savedGasUrl) {
-                    appState.settings.gasUrl = savedGasUrl;
-                }
-
-                const savedSettings = localStorage.getItem('absensi_settings');
-                if (savedSettings) {
-                    appState.settings = { ...appState.settings, ...JSON.parse(savedSettings) };
-                }
-
-                const savedCreds = localStorage.getItem('absensi_admin_creds');
-                if (savedCreds) {
-                    appState.adminCreds = JSON.parse(savedCreds);
-                }
+                const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+                if (!raw) return;
+                const saved = JSON.parse(raw);
+                if (saved.settings) Object.assign(appState.settings, saved.settings);
+                if (saved.adminCreds) Object.assign(appState.adminCreds, saved.adminCreds);
             } catch (e) {
-                console.warn('Gagal memuat state dari localStorage:', e);
+                console.warn('Gagal memuat konfigurasi lokal:', e);
             }
         }
 
-        function saveStateToLocal() {
+        function saveAppConfigToLocalStorage() {
             try {
-                localStorage.setItem('absensi_gas_url', appState.settings.gasUrl);
-                localStorage.setItem('absensi_settings', JSON.stringify(appState.settings));
-                localStorage.setItem('absensi_admin_creds', JSON.stringify(appState.adminCreds));
+                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify({
+                    settings: appState.settings,
+                    adminCreds: appState.adminCreds
+                }));
             } catch (e) {
-                console.warn('Gagal menyimpan state ke localStorage:', e);
-            }
-        }
-
-        /* ==========================================================================
-           GOOGLE SPREADSHEET DATABASE SYNC ENGINE
-           ========================================================================== */
-        async function fetchDatabaseFromGAS() {
-            if (!appState.settings.gasUrl) {
-                updateDbConnectionStatus(false, "URL Web App belum diisi di Pengaturan.");
-                return false;
-            }
-
-            const dbSyncStatus = document.getElementById('dbSyncStatus');
-            if (dbSyncStatus) {
-                dbSyncStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-500 animate-ping"></span> Menghubungkan...`;
-            }
-
-            try {
-                const fetchUrl = `${appState.settings.gasUrl}?action=getInitialData&t=${Date.now()}`;
-                const response = await fetch(fetchUrl);
-                
-                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
-                
-                const result = await response.json();
-
-                if (result.status === "success") {
-                    if (Array.isArray(result.employees) && result.employees.length > 0) {
-                        appState.employees = result.employees;
-                    }
-                    if (Array.isArray(result.logs)) {
-                        appState.logs = result.logs;
-                    }
-                    if (result.settings && typeof result.settings === 'object') {
-                        if (result.settings.jamMasuk) appState.settings.jamMasuk = result.settings.jamMasuk;
-                        if (result.settings.jamPulang) appState.settings.jamPulang = result.settings.jamPulang;
-                        if (result.settings.toleransiMenit) appState.settings.toleransiMenit = result.settings.toleransiMenit;
-                        if (result.settings.officeSubnet) appState.settings.officeSubnet = result.settings.officeSubnet;
-                    }
-
-                    updateDbConnectionStatus(true, `Terhubung dengan Google Spreadsheet (${appState.employees.length} Karyawan, ${appState.logs.length} Log)`);
-                    renderEmployeeList();
-                    renderAttendanceLogs();
-                    updateDashboardStats();
-                    saveStateToLocal();
-                    return true;
-                } else {
-                    throw new Error(result.message || "Gagal mengambil data dari Spreadsheet");
-                }
-            } catch (err) {
-                console.error("Kesalahan koneksi Google Spreadsheet:", err);
-                updateDbConnectionStatus(false, `Gagal terkoneksi: ${err.message}. Pastikan akses Web App diset ke "Anyone".`);
-                return false;
-            }
-        }
-
-        async function postToGAS(action, payloadData) {
-            if (!appState.settings.gasUrl) return null;
-
-            try {
-                const response = await fetch(appState.settings.gasUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify({ action: action, data: payloadData })
-                });
-                return response;
-            } catch (err) {
-                console.error(`Gagal mengirim aksi '${action}' ke Google Apps Script:`, err);
-                return null;
-            }
-        }
-
-        function updateDbConnectionStatus(isConnected, message) {
-            appState.isDbConnected = isConnected;
-
-            const dbSyncStatus = document.getElementById('dbSyncStatus');
-            const infoText = document.getElementById('dbConnectionInfoText');
-            const headerDbBadge = document.getElementById('headerDbBadge');
-            const headerDbDot = document.getElementById('headerDbDot');
-            const headerDbText = document.getElementById('headerDbText');
-
-            if (isConnected) {
-                if (dbSyncStatus) {
-                    dbSyncStatus.className = 'text-emerald-400 flex items-center gap-1';
-                    dbSyncStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500"></span> Spreadsheet Terhubung`;
-                }
-                if (infoText) {
-                    infoText.innerText = message;
-                    infoText.className = "text-xs text-emerald-400 font-medium";
-                }
-                if (headerDbBadge) headerDbBadge.classList.remove('hidden');
-                if (headerDbDot) headerDbDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse";
-                if (headerDbText) {
-                    headerDbText.innerText = "Spreadsheet: Online";
-                    headerDbText.className = "text-emerald-400 font-semibold";
-                }
-            } else {
-                if (dbSyncStatus) {
-                    dbSyncStatus.className = 'text-rose-400 flex items-center gap-1';
-                    dbSyncStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-500"></span> Belum Terhubung`;
-                }
-                if (infoText) {
-                    infoText.innerText = message;
-                    infoText.className = "text-xs text-rose-400";
-                }
-                if (headerDbBadge) headerDbBadge.classList.remove('hidden');
-                if (headerDbDot) headerDbDot.className = "w-2.5 h-2.5 rounded-full bg-rose-500";
-                if (headerDbText) {
-                    headerDbText.innerText = "Spreadsheet: Offline";
-                    headerDbText.className = "text-rose-400 font-semibold";
-                }
-            }
-        }
-
-        async function testAndSyncSpreadsheet() {
-            const urlInput = document.getElementById('cfgGasUrl');
-            if (urlInput && urlInput.value.trim()) {
-                appState.settings.gasUrl = urlInput.value.trim();
-            }
-
-            if (!appState.settings.gasUrl) {
-                alert('Silakan masukkan URL Web App Google Sheets di menu Pengaturan Sistem!');
-                return;
-            }
-
-            const success = await fetchDatabaseFromGAS();
-            if (success) {
-                alert('✓ Berhasil terhubung dan memuat data dari Google Spreadsheet!');
-            } else {
-                alert('❌ Gagal terhubung ke Google Spreadsheet! Periksa kembali URL dan pastikan Deployment diset untuk "Anyone".');
+                console.warn('Gagal menyimpan konfigurasi lokal:', e);
             }
         }
 
@@ -834,6 +676,112 @@
                 wifiDot.className = 'relative inline-flex rounded-full h-3 w-3 bg-rose-500';
                 wifiPingDot.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75';
             }
+        }
+
+        /* ==========================================================================
+           KOMUNIKASI DENGAN BACKEND GOOGLE APPS SCRIPT
+           --------------------------------------------------------------------------
+           Sebelumnya semua request POST dikirim dengan `mode: 'no-cors'` DAN header
+           'Content-Type: application/json'. Kombinasi ini bermasalah:
+           1. Browser tidak mengizinkan header non-standar saat mode 'no-cors',
+              sehingga request menjadi tidak konsisten antar-browser.
+           2. Karena mode 'no-cors', response yang didapat SELALU "opaque" -> kita
+              tidak pernah bisa tahu apakah data benar-benar tersimpan di Spreadsheet
+              atau gagal (error selalu tersembunyi, sinkronisasi terasa "asal jalan").
+           Solusi: kirim body sebagai teks biasa (text/plain) -- ini termasuk header
+           yang aman (safelisted) sehingga TIDAK memicu preflight OPTIONS (yang tidak
+           didukung Apps Script Web App) namun tetap bisa memakai mode default (cors),
+           sehingga responsnya bisa dibaca untuk mengetahui sukses/gagal.
+           ========================================================================== */
+        async function postToBackend(action, data) {
+            const gasUrl = (appState.settings.gasUrl || "").trim();
+            if (!gasUrl) {
+                throw new Error("URL Web App Google Apps Script (GAS) belum diatur di Panel Admin > Pengaturan Sistem.");
+            }
+
+            const response = await fetch(gasUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ action, data })
+            });
+
+            const result = await response.json();
+            if (result.status !== 'success') {
+                throw new Error(result.message || 'Backend mengembalikan status error.');
+            }
+            return result;
+        }
+
+        async function fetchInitialDataFromBackend(showAlerts) {
+            const gasUrl = (appState.settings.gasUrl || "").trim();
+            if (!gasUrl) {
+                setDbSyncStatus('idle', 'URL GAS belum diatur');
+                return;
+            }
+
+            setDbSyncStatus('loading', 'Menyinkronkan...');
+            try {
+                const url = gasUrl + (gasUrl.includes('?') ? '&' : '?') + 'action=getInitialData';
+                const response = await fetch(url, { method: 'GET' });
+                const result = await response.json();
+
+                if (result.status !== 'success') {
+                    throw new Error(result.message || 'Gagal memuat data dari Spreadsheet.');
+                }
+
+                appState.employees = Array.isArray(result.employees) ? result.employees : [];
+                appState.logs = Array.isArray(result.logs) ? result.logs : [];
+                if (result.settings) {
+                    // Simpan gasUrl lokal, tapi selebihnya ambil dari Spreadsheet (sumber kebenaran utama)
+                    const gasUrlLocal = appState.settings.gasUrl;
+                    Object.assign(appState.settings, result.settings);
+                    appState.settings.gasUrl = gasUrlLocal;
+                    appState.settings.toleransiMenit = parseInt(appState.settings.toleransiMenit) || 0;
+                    reflectSettingsToUI();
+                }
+
+                renderEmployeeList();
+                renderAttendanceLogs();
+                updateDashboardStats();
+                validateOfficeWifiNetwork();
+                setDbSyncStatus('ok', 'Terhubung');
+
+                if (showAlerts) alert('Data berhasil disinkronkan dari Google Spreadsheet!');
+            } catch (err) {
+                console.error('Gagal mengambil data awal dari backend:', err);
+                setDbSyncStatus('error', 'Gagal Terhubung');
+                if (showAlerts) alert('Gagal memuat data dari Spreadsheet: ' + err.message);
+            }
+        }
+
+        function setDbSyncStatus(state, label) {
+            const el = document.getElementById('dbSyncStatus');
+            if (!el) return;
+            const colorMap = {
+                ok: 'text-emerald-400',
+                loading: 'text-blue-400',
+                error: 'text-rose-400',
+                idle: 'text-slate-400'
+            };
+            const dotMap = {
+                ok: 'bg-emerald-500',
+                loading: 'bg-blue-500 animate-pulse',
+                error: 'bg-rose-500',
+                idle: 'bg-slate-500'
+            };
+            el.className = colorMap[state] + ' flex items-center gap-1';
+            el.innerHTML = `<span class="w-2 h-2 rounded-full ${dotMap[state]}"></span> ${label}`;
+        }
+
+        function reflectSettingsToUI() {
+            document.getElementById('cfgJamMasuk').value = appState.settings.jamMasuk;
+            document.getElementById('cfgJamPulang').value = appState.settings.jamPulang;
+            document.getElementById('cfgToleransi').value = appState.settings.toleransiMenit;
+            document.getElementById('cfgOfficeSubnet').value = appState.settings.officeSubnet;
+            document.getElementById('cfgGasUrl').value = appState.settings.gasUrl;
+            document.getElementById('infoJamMasuk').innerText = `${appState.settings.jamMasuk} WIB`;
+            document.getElementById('infoJamPulang').innerText = `${appState.settings.jamPulang} WIB`;
+            document.getElementById('infoToleransi').innerText = `${appState.settings.toleransiMenit} Menit`;
         }
 
         /* ==========================================================================
@@ -944,9 +892,15 @@
                 }
             });
 
-            // Threshold tolerance for match validation
-            if (lowestDistance < 0.65 || appState.employees.length === 1) {
-                return appState.employees[0]; // Returns recognized employee
+            // Threshold tolerance for match validation.
+            // PERBAIKAN: sebelumnya kode ini SELALU mengembalikan appState.employees[0]
+            // (karyawan pertama di database) alih-alih `bestMatch` yang benar-benar
+            // dihitung di atas -- akibatnya wajah SIAPA PUN akan tercatat sebagai
+            // karyawan pertama selama ada minimal satu karyawan terdaftar.
+            // Kondisi "employees.length === 1 selalu lolos" juga dihapus karena itu
+            // berarti verifikasi wajah dilewati sepenuhnya saat baru ada 1 karyawan.
+            if (bestMatch && lowestDistance < 0.65) {
+                return bestMatch;
             }
             return null;
         }
@@ -1001,32 +955,38 @@
 
                 // Determine Attendance Status based on Working Hours
                 const now = new Date();
+                const currentFormattedTime = now.toTimeString().substring(0, 5); // HH:mm
                 const dateStr = now.toISOString().split('T')[0];
 
                 const jamMasuk = appState.settings.jamMasuk;
                 const jamPulang = appState.settings.jamPulang;
                 const toleransi = parseInt(appState.settings.toleransiMenit);
 
-                let scanType = "Masuk";
-                let statusPresensi = "Tepat Waktu";
+                // PERBAIKAN: sebelumnya tipe absen (Masuk/Pulang) ditentukan HANYA dari
+                // jam saat ini dibanding jam pulang -- akibatnya karyawan yang baru
+                // pertama kali absen di hari itu, tapi kebetulan sudah lewat jam
+                // pulang, akan tercatat sebagai "Pulang" padahal itu absen masuknya.
+                // Sekarang dicek dulu apakah NIP ini SUDAH punya log "Masuk" hari ini;
+                // jika belum ada -> ini absen Masuk, jika sudah ada -> ini absen Pulang.
+                const sudahMasukHariIni = appState.logs.some(l =>
+                    l.nip === matchedEmployee.nip && l.tanggal === dateStr && l.tipe === "Masuk"
+                );
 
-                // If clocking in after jamMasuk + toleransi
-                const [targetH, targetM] = jamMasuk.split(':').map(Number);
-                const targetLimitMinutes = targetH * 60 + targetM + toleransi;
-                const currentMinutes = now.getHours() * 60 + now.getMinutes();
+                let scanType = sudahMasukHariIni ? "Pulang" : "Masuk";
+                let statusPresensi = sudahMasukHariIni ? "Selesai Kerja" : "Tepat Waktu";
 
-                if (currentMinutes > targetLimitMinutes) {
-                    statusPresensi = "Terlambat";
-                }
+                if (scanType === "Masuk") {
+                    const [targetH, targetM] = jamMasuk.split(':').map(Number);
+                    const targetLimitMinutes = targetH * 60 + targetM + toleransi;
+                    const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
-                // If clocking in after jamPulang time frame
-                if (now.getHours() >= parseInt(jamPulang.split(':')[0])) {
-                    scanType = "Pulang";
-                    statusPresensi = "Selesai Kerja";
+                    if (currentMinutes > targetLimitMinutes) {
+                        statusPresensi = "Terlambat";
+                    }
                 }
 
                 const newLog = {
-                    id: "LOG-" + Date.now(),
+                    id: Date.now(),
                     tanggal: dateStr,
                     waktu: now.toLocaleTimeString('id-ID'),
                     nip: matchedEmployee.nip,
@@ -1041,7 +1001,7 @@
                 updateDashboardStats();
 
                 // Send data to Google Spreadsheet Web App if URL configured
-                await postToGAS('clockIn', newLog);
+                syncLogToGoogleSheet(newLog);
 
                 // Show Success Result
                 resultBox.innerHTML = `
@@ -1055,6 +1015,23 @@
                 lucide.createIcons();
 
             }, 1800);
+        }
+
+        async function syncLogToGoogleSheet(logData) {
+            if (!appState.settings.gasUrl) {
+                setDbSyncStatus('idle', 'URL GAS belum diatur');
+                return;
+            }
+
+            setDbSyncStatus('loading', 'Menyinkronkan...');
+            try {
+                await postToBackend('clockIn', logData);
+                setDbSyncStatus('ok', 'Terhubung');
+                console.log('Presensi tersinkron ke Google Spreadsheet');
+            } catch (err) {
+                setDbSyncStatus('error', 'Gagal Sinkron');
+                console.error('Gagal mentransfer data ke Google Apps Script:', err);
+            }
         }
 
         /* ==========================================================================
@@ -1110,11 +1087,6 @@
             btnSubmit.disabled = false;
         }
 
-        function submitRegistration(e) {
-            e.preventDefault();
-            const nip = document.getElementById('regNip').value.trim();
-            const nama = document.getElementById('regNama').value.trim();
-            const jabatan = document.getElementById('regJabatan').value.trim();
         async function submitRegistration(e) {
             e.preventDefault();
             const nip = document.getElementById('regNip').value.trim();
@@ -1134,17 +1106,28 @@
                 descriptor: appState.tempFaceDescriptor
             };
 
-            appState.employees.push(newEmployee);
-            renderEmployeeList();
-            updateDashboardStats();
-            closeRegistrationModal();
+            const btnSubmit = document.getElementById('btnSubmitReg');
+            btnSubmit.disabled = true;
+            btnSubmit.innerText = 'Menyimpan ke Spreadsheet...';
 
-            // Sync employee registration to Google Sheet
-            if (appState.settings.gasUrl) {
-                await postToGAS('registerUser', newEmployee);
+            try {
+                // PERBAIKAN: sebelumnya request dikirim dengan mode 'no-cors' dan TIDAK
+                // ditunggu hasilnya, sehingga pesan "berhasil terdaftar" selalu muncul
+                // meskipun data gagal tersimpan di Google Spreadsheet. Sekarang ditunggu
+                // dan hanya dianggap sukses jika backend benar-benar mengonfirmasi.
+                await postToBackend('registerUser', newEmployee);
+
+                appState.employees.push(newEmployee);
+                renderEmployeeList();
+                updateDashboardStats();
+                closeRegistrationModal();
+                alert(`Karyawan ${nama} (${nip}) berhasil terdaftar!`);
+            } catch (err) {
+                alert('Gagal mendaftarkan karyawan: ' + err.message);
+            } finally {
+                btnSubmit.disabled = false;
+                btnSubmit.innerText = 'Daftarkan Karyawan';
             }
-
-            alert(`Karyawan ${nama} (${nip}) berhasil terdaftar dan tersimpan ke sistem!`);
         }
 
         /* ==========================================================================
@@ -1207,24 +1190,37 @@
             e.preventDefault();
             appState.settings.jamMasuk = document.getElementById('cfgJamMasuk').value;
             appState.settings.jamPulang = document.getElementById('cfgJamPulang').value;
-            appState.settings.toleransiMenit = document.getElementById('cfgToleransi').value;
-            appState.settings.officeSubnet = document.getElementById('cfgOfficeSubnet').value;
+            appState.settings.toleransiMenit = parseInt(document.getElementById('cfgToleransi').value) || 0;
+            appState.settings.officeSubnet = document.getElementById('cfgOfficeSubnet').value.trim();
             appState.settings.gasUrl = document.getElementById('cfgGasUrl').value.trim();
 
-            // Update Header & Info Boxes
-            document.getElementById('infoJamMasuk').innerText = `${appState.settings.jamMasuk} WIB`;
-            document.getElementById('infoJamPulang').innerText = `${appState.settings.jamPulang} WIB`;
-            document.getElementById('infoToleransi').innerText = `${appState.settings.toleransiMenit} Menit`;
+            // PERBAIKAN: simpan ke localStorage supaya URL GAS & pengaturan lain
+            // tidak hilang setiap halaman di-refresh (sebelumnya hanya ada di
+            // variabel JS sementara).
+            saveAppConfigToLocalStorage();
 
-            saveStateToLocal();
+            // Update Header & Info Boxes
+            reflectSettingsToUI();
             validateOfficeWifiNetwork();
 
+            // Sinkronkan juga ke Spreadsheet agar semua perangkat kiosk memakai
+            // pengaturan yang sama (sebelumnya tidak pernah dikirim ke backend sama sekali).
             if (appState.settings.gasUrl) {
-                await postToGAS('saveSettings', appState.settings);
-                await fetchDatabaseFromGAS();
+                try {
+                    await postToBackend('saveSettings', {
+                        jamMasuk: appState.settings.jamMasuk,
+                        jamPulang: appState.settings.jamPulang,
+                        toleransiMenit: appState.settings.toleransiMenit,
+                        officeSubnet: appState.settings.officeSubnet
+                    });
+                    alert('Pengaturan berhasil disimpan & disinkronkan ke Spreadsheet!');
+                    fetchInitialDataFromBackend(false);
+                } catch (err) {
+                    alert('Pengaturan tersimpan di perangkat ini, tapi GAGAL disinkronkan ke Spreadsheet: ' + err.message);
+                }
+            } else {
+                alert('Pengaturan berhasil disimpan di perangkat ini. Atur juga URL Web App GAS agar tersinkron ke Spreadsheet.');
             }
-
-            alert('Pengaturan jam kerja, Wi-Fi kantor & database berhasil disimpan!');
         }
 
         function updateAdminCredentials(e) {
@@ -1240,7 +1236,9 @@
 
             appState.adminCreds.username = newU;
             appState.adminCreds.password = newP;
-            saveStateToLocal();
+            // PERBAIKAN: sebelumnya kredensial baru hanya ada di variabel JS dan
+            // kembali ke admin/password123 setiap halaman di-refresh.
+            saveAppConfigToLocalStorage();
             alert('Kredensial Login Admin berhasil diperbarui!');
             document.getElementById('formAdminCreds').reset();
         }
@@ -1305,18 +1303,31 @@
                     <td class="p-3"><span class="text-emerald-400 font-medium text-[11px]">✓ Vector Stored</span></td>
                     <td class="p-3 text-slate-400 font-mono">${emp.registeredDate}</td>
                     <td class="p-3">
+                        <button onclick="deleteEmployee(${index})" class="text-rose-400 hover:text-rose-300 p-1"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                    </td>
+                </tr>
+            `).join('');
+            lucide.createIcons();
+        }
+
         async function deleteEmployee(index) {
             const emp = appState.employees[index];
             if (!emp) return;
+            if (!confirm(`Yakin ingin menghapus data karyawan ${emp.nama} (${emp.nip})?`)) return;
 
-            if (confirm(`Yakin ingin menghapus karyawan ${emp.nama} (${emp.nip})?`)) {
+            try {
+                // PERBAIKAN: sebelumnya penghapusan hanya terjadi di memori browser
+                // (splice) dan tidak pernah dikirim ke backend, sehingga karyawan yang
+                // "dihapus" akan muncul kembali begitu data disinkronkan ulang dari
+                // Spreadsheet, atau tetap ada di perangkat kiosk lain.
+                if (appState.settings.gasUrl) {
+                    await postToBackend('deleteUser', { nip: emp.nip });
+                }
                 appState.employees.splice(index, 1);
                 renderEmployeeList();
                 updateDashboardStats();
-
-                if (appState.settings.gasUrl) {
-                    await postToGAS('deleteUser', { nip: emp.nip });
-                }
+            } catch (err) {
+                alert('Gagal menghapus karyawan dari Spreadsheet: ' + err.message);
             }
         }
 
@@ -1357,49 +1368,410 @@
            GOOGLE APPS SCRIPT CODE.GS GENERATOR & MODAL
            ========================================================================= */
         const CODE_GS_SCRIPT = `/**
- * BACKEND GOOGLE APPS SCRIPT - ABSENSI WAJAH & WI-FI KANTOR
- * Tempelkan kode ini di Google Apps Script yang terhubung ke Google Spreadsheet Anda.
+ * ==============================================================================
+ * BACKEND GOOGLE APPS SCRIPT (Code.gs)
+ * SISTEM ABSENSI WAJAH & WI-FI KANTOR
+ * ==============================================================================
+ * 
+ * CARA MENJALANKAN SETUP PERTAMA KALI:
+ * 1. Di bagian atas editor Apps Script ini, pilih fungsi "setupDatabase".
+ * 2. Klik tombol ▶ RUN (Jalankan).
+ * 3. Berikan izin akses (Review Permissions -> Choose Account -> Advanced -> Go to Script -> Allow).
+ * 4. Database sheet (Absensi, Karyawan, Pengaturan) akan otomatis dibuat & diformat!
+ * ==============================================================================
  */
 
-function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Web App Absensi Active" }))
-    .setMimeType(ContentService.MimeType.JSON);
+/**
+ * FUNGSI UTAMA SETUP DATABASE (Jalankan ini dari tombol Run di Apps Script Editor)
+ */
+function setupDatabase() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // 1. Inisialisasi Sheet Absensi
+  var sheetAbsensi = getOrCreateSheet("Absensi", [
+    "ID Record", "Tanggal", "Waktu", "NIP", "Nama", "Tipe Absen", "Status", "IP Address / Wi-Fi", "Waktu Server"
+  ]);
+  
+  // 2. Inisialisasi Sheet Karyawan
+  var sheetKaryawan = getOrCreateSheet("Karyawan", [
+    "NIP", "Nama Lengkap", "Jabatan", "Tanggal Registrasi", "Face Descriptor Vector (JSON)", "Status Aktif"
+  ]);
+  
+  // 3. Inisialisasi Sheet Pengaturan dengan konfigurasi default
+  var sheetPengaturan = getOrCreateSheet("Pengaturan", ["Kunci Pengaturan", "Nilai"]);
+  var rowsSettings = sheetPengaturan.getDataRange().getValues();
+  if (rowsSettings.length <= 1) {
+    sheetPengaturan.appendRow(["jamMasuk", "08:00"]);
+    sheetPengaturan.appendRow(["jamPulang", "17:00"]);
+    sheetPengaturan.appendRow(["toleransiMenit", 15]);
+    sheetPengaturan.appendRow(["officeSubnet", "192.168.1"]);
+  }
+  
+  // Format visual header dan pembekuan baris pertama (Freeze Header)
+  [sheetAbsensi, sheetKaryawan, sheetPengaturan].forEach(function(sh) {
+    sh.setFrozenRows(1);
+    try {
+      sh.autoResizeColumns(1, sh.getLastColumn() || 1);
+    } catch(e) {}
+  });
+  
+  Logger.log("✅ Setup Database Berhasil! Sheet 'Absensi', 'Karyawan', dan 'Pengaturan' telah dibuat.");
+  
+  try {
+    SpreadsheetApp.getUi().alert("✅ Setup Database Berhasil!\n\nTab 'Absensi', 'Karyawan', dan 'Pengaturan' telah siap digunakan.");
+  } catch (e) {
+    // Dipanggil saat di-run dari background trigger
+  }
 }
 
-function doPost(e) {
+/**
+ * Menambahkan menu kustom di Google Spreadsheet UI untuk kemudahan admin
+ */
+function onOpen() {
   try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var postData = JSON.parse(e.postData.contents);
-    var action = postData.action;
-    var data = postData.data;
+    var ui = SpreadsheetApp.getUi();
+    ui.createMenu('⚙️ Sistem Absensi')
+      .addItem('🚀 Jalankan Setup Database', 'setupDatabase')
+      .addItem('📊 Test API Status', 'testApiStatus')
+      .addToUi();
+  } catch (e) {
+    // Ignore error jika dijalankan tanpa UI context
+  }
+}
 
-    if (action === "clockIn") {
-      var sheet = ss.getSheetByName("Absensi") || ss.insertSheet("Absensi");
-      if (sheet.getLastRow() === 0) {
-        sheet.appendRow(["ID", "Tanggal", "Waktu", "NIP", "Nama", "Tipe Absen", "Status", "IP Address"]);
-      }
-      sheet.appendRow([data.id, data.tanggal, data.waktu, data.nip, data.nama, data.tipe, data.status, data.ip]);
-      return responseJSON({ status: "success", message: "Absen berhasil dicatat!" });
+function testApiStatus() {
+  var ui = SpreadsheetApp.getUi();
+  ui.alert("✅ API Google Apps Script Berjalan Normal!\n\nWaktu Server: " + new Date().toLocaleString("id-ID"));
+}
+
+/**
+ * Serves HTTP GET requests (Web Health Check & API Status)
+ */
+function doGet(e) {
+  try {
+    var params = e ? e.parameter : {};
+    var action = params ? params.action : "";
+
+    if (action === "getInitialData") {
+      return responseJSON({
+        status: "success",
+        employees: fetchEmployeesList(),
+        logs: fetchAttendanceLogs(),
+        settings: fetchSettings()
+      });
     }
 
-    if (action === "registerUser") {
-      var sheet = ss.getSheetByName("Karyawan") || ss.insertSheet("Karyawan");
-      if (sheet.getLastRow() === 0) {
-        sheet.appendRow(["NIP", "Nama", "Jabatan", "Tanggal Daftar", "Face Descriptor JSON"]);
-      }
-      sheet.appendRow([data.nip, data.nama, data.jabatan, data.registeredDate, JSON.stringify(data.descriptor)]);
-      return responseJSON({ status: "success", message: "Karyawan berhasil terdaftar!" });
-    }
-
-    return responseJSON({ status: "error", message: "Action tidak dikenal" });
+    return responseJSON({
+      status: "success",
+      message: "Backend Google Apps Script Absensi Wajah & Wi-Fi Kantor Aktif!",
+      timestamp: new Date().toISOString()
+    });
   } catch (err) {
     return responseJSON({ status: "error", message: err.toString() });
   }
 }
 
-function responseJSON(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
+/**
+ * Serves HTTP POST requests from the front-end application
+ */
+function doPost(e) {
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return responseJSON({ status: "error", message: "Payload request kosong!" });
+    }
+
+    var postData = JSON.parse(e.postData.contents);
+    var action = postData.action;
+    var data = postData.data;
+
+    switch (action) {
+      case "clockIn":
+        return processClockIn(data);
+      case "registerUser":
+        return processUserRegistration(data);
+      case "deleteUser":
+        return processDeleteUser(data);
+      case "saveSettings":
+        return processSaveSettings(data);
+      case "getEmployees":
+        return responseJSON({ status: "success", data: fetchEmployeesList() });
+      case "getLogs":
+        return responseJSON({ status: "success", data: fetchAttendanceLogs() });
+      default:
+        return responseJSON({ status: "error", message: "Aksi '" + action + "' tidak dikenali." });
+    }
+  } catch (err) {
+    return responseJSON({ status: "error", message: "Terjadi kesalahan server: " + err.toString() });
+  }
+}
+
+/**
+ * Records an attendance log entry into the 'Absensi' sheet
+ */
+function processClockIn(data) {
+  if (!data || !data.nip || !data.nama) {
+    return responseJSON({ status: "error", message: "Data absensi tidak lengkap!" });
+  }
+
+  var sheet = getOrCreateSheet("Absensi", [
+    "ID Record", "Tanggal", "Waktu", "NIP", "Nama", "Tipe Absen", "Status", "IP Address / Wi-Fi", "Waktu Server"
+  ]);
+
+  var recordId = data.id || "LOG-" + Date.now();
+  var dateStr = data.tanggal || getCurrentFormattedDate();
+  var timeStr = data.waktu || getCurrentFormattedTime();
+  var serverTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
+
+  sheet.appendRow([
+    recordId,
+    dateStr,
+    timeStr,
+    data.nip,
+    data.nama,
+    data.tipe || "Masuk",
+    data.status || "Tepat Waktu",
+    data.ip || "192.168.1.1",
+    serverTime
+  ]);
+
+  return responseJSON({
+    status: "success",
+    message: "Absensi " + data.nama + " (" + data.nip + ") berhasil dicatat!",
+    recordId: recordId
+  });
+}
+
+/**
+ * Registers a new employee with biometric descriptor data into 'Karyawan' sheet
+ */
+function processUserRegistration(data) {
+  if (!data || !data.nip || !data.nama) {
+    return responseJSON({ status: "error", message: "Data pendaftaran karyawan tidak lengkap!" });
+  }
+
+  var sheet = getOrCreateSheet("Karyawan", [
+    "NIP", "Nama Lengkap", "Jabatan", "Tanggal Registrasi", "Face Descriptor Vector (JSON)", "Status Aktif"
+  ]);
+
+  var existingData = sheet.getDataRange().getValues();
+  for (var i = 1; i < existingData.length; i++) {
+    if (existingData[i][0] == data.nip) {
+      var descriptorJson = typeof data.descriptor === 'string' ? data.descriptor : JSON.stringify(data.descriptor || []);
+      sheet.getRange(i + 1, 2, 1, 5).setValues([[
+        data.nama,
+        data.jabatan || "-",
+        data.registeredDate || getCurrentFormattedDate(),
+        descriptorJson,
+        "Aktif"
+      ]]);
+
+      return responseJSON({
+        status: "success",
+        message: "Data karyawan dengan NIP " + data.nip + " berhasil diperbarui!"
+      });
+    }
+  }
+
+  var descriptorString = typeof data.descriptor === 'string' ? data.descriptor : JSON.stringify(data.descriptor || []);
+  sheet.appendRow([
+    data.nip,
+    data.nama,
+    data.jabatan || "Staff",
+    data.registeredDate || getCurrentFormattedDate(),
+    descriptorString,
+    "Aktif"
+  ]);
+
+  return responseJSON({
+    status: "success",
+    message: "Karyawan " + data.nama + " (" + data.nip + ") berhasil terdaftar!"
+  });
+}
+
+/**
+ * Deletes an employee by NIP from the 'Karyawan' sheet
+ */
+function processDeleteUser(data) {
+  if (!data || !data.nip) {
+    return responseJSON({ status: "error", message: "NIP Karyawan wajib disertakan!" });
+  }
+
+  var sheet = getOrCreateSheet("Karyawan", [
+    "NIP", "Nama Lengkap", "Jabatan", "Tanggal Registrasi", "Face Descriptor Vector (JSON)", "Status Aktif"
+  ]);
+
+  var rows = sheet.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    if (rows[i][0] == data.nip) {
+      sheet.deleteRow(i + 1);
+      return responseJSON({ status: "success", message: "Data Karyawan NIP " + data.nip + " berhasil dihapus." });
+    }
+  }
+
+  return responseJSON({ status: "error", message: "NIP tidak ditemukan dalam database." });
+}
+
+/**
+ * Reads all active employees from the spreadsheet
+ */
+function fetchEmployeesList() {
+  var sheet = getOrCreateSheet("Karyawan", [
+    "NIP", "Nama Lengkap", "Jabatan", "Tanggal Registrasi", "Face Descriptor Vector (JSON)", "Status Aktif"
+  ]);
+
+  var rows = sheet.getDataRange().getValues();
+  var employees = [];
+
+  for (var i = 1; i < rows.length; i++) {
+    var row = rows[i];
+    if (row[0] && row[5] !== "Non-Aktif") {
+      var parsedDescriptor = [];
+      try {
+        parsedDescriptor = typeof row[4] === 'string' ? JSON.parse(row[4]) : row[4];
+      } catch (e) {
+        parsedDescriptor = [];
+      }
+
+      employees.push({
+        nip: String(row[0]),
+        nama: String(row[1]),
+        jabatan: String(row[2]),
+        registeredDate: String(row[3]),
+        descriptor: parsedDescriptor
+      });
+    }
+  }
+
+  return employees;
+}
+
+/**
+ * Reads attendance logs from the spreadsheet
+ */
+function fetchAttendanceLogs() {
+  var sheet = getOrCreateSheet("Absensi", [
+    "ID Record", "Tanggal", "Waktu", "NIP", "Nama", "Tipe Absen", "Status", "IP Address / Wi-Fi", "Waktu Server"
+  ]);
+
+  var rows = sheet.getDataRange().getValues();
+  var logs = [];
+
+  for (var i = rows.length - 1; i >= 1; i--) {
+    var row = rows[i];
+    if (row[0]) {
+      logs.push({
+        id: String(row[0]),
+        tanggal: String(row[1]),
+        waktu: String(row[2]),
+        nip: String(row[3]),
+        nama: String(row[4]),
+        tipe: String(row[5]),
+        status: String(row[6]),
+        ip: String(row[7])
+      });
+    }
+  }
+
+  return logs;
+}
+
+/**
+ * Reads system settings from 'Pengaturan' sheet
+ */
+function fetchSettings() {
+  var sheet = getOrCreateSheet("Pengaturan", ["Kunci Pengaturan", "Nilai"]);
+  var rows = sheet.getDataRange().getValues();
+  var settings = {
+    jamMasuk: "08:00",
+    jamPulang: "17:00",
+    toleransiMenit: 15,
+    officeSubnet: "192.168.1"
+  };
+
+  for (var i = 1; i < rows.length; i++) {
+    var key = String(rows[i][0]).trim();
+    var val = rows[i][1];
+    if (key && val !== undefined) {
+      settings[key] = val;
+    }
+  }
+
+  // Pastikan toleransiMenit selalu berupa angka, walau tersimpan sebagai teks
+  settings.toleransiMenit = Number(settings.toleransiMenit) || 0;
+
+  return settings;
+}
+
+/**
+ * Saves system configuration parameters into 'Pengaturan' sheet
+ */
+function processSaveSettings(data) {
+  if (!data) return responseJSON({ status: "error", message: "Data pengaturan kosong!" });
+
+  var sheet = getOrCreateSheet("Pengaturan", ["Kunci Pengaturan", "Nilai"]);
+  var keys = Object.keys(data);
+
+  keys.forEach(function(key) {
+    var rows = sheet.getDataRange().getValues();
+    var found = false;
+    for (var i = 1; i < rows.length; i++) {
+      if (rows[i][0] == key) {
+        sheet.getRange(i + 1, 2).setValue(data[key]);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      sheet.appendRow([key, data[key]]);
+    }
+  });
+
+  return responseJSON({ status: "success", message: "Pengaturan sistem berhasil disimpan!" });
+}
+
+/**
+ * Helper function to create sheets with custom headers if not existing
+ */
+function getOrCreateSheet(sheetName, headers) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(sheetName);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    if (headers && headers.length > 0) {
+      sheet.appendRow(headers);
+      var headerRange = sheet.getRange(1, 1, 1, headers.length);
+      headerRange.setFontWeight("bold");
+      headerRange.setBackground("#1e293b");
+      headerRange.setFontColor("#f8fafc");
+    }
+  }
+
+  return sheet;
+}
+
+/**
+ * Helper to return uniform JSON output with CORS headers
+ */
+function responseJSON(data) {
+  return ContentService.createTextOutput(JSON.stringify(data))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+function getCurrentFormattedDate() {
+  var d = new Date();
+  var year = d.getFullYear();
+  var month = ("0" + (d.getMonth() + 1)).slice(-2);
+  var day = ("0" + d.getDate()).slice(-2);
+  return year + "-" + month + "-" + day;
+}
+
+function getCurrentFormattedTime() {
+  var d = new Date();
+  var hours = ("0" + d.getHours()).slice(-2);
+  var minutes = ("0" + d.getMinutes()).slice(-2);
+  var seconds = ("0" + d.getSeconds()).slice(-2);
+  return hours + ":" + minutes + ":" + seconds;
 }`;
 
         function openScriptCodeModal() {
@@ -1419,9 +1791,13 @@ function responseJSON(obj) {
         /* ==========================================================================
            APPLICATION INITIALIZATION
            ========================================================================== */
-        window.addEventListener('DOMContentLoaded', async () => {
+        window.addEventListener('DOMContentLoaded', () => {
             lucide.createIcons();
-            loadSavedState();
+
+            // PERBAIKAN: muat konfigurasi tersimpan (URL GAS, jam kerja, kredensial
+            // admin) dari localStorage terlebih dahulu -- sebelumnya semua ini hanya
+            // hidup di variabel JS sehingga hilang total setiap halaman dibuka ulang.
+            loadAppConfigFromLocalStorage();
 
             // Real-time Clock
             setInterval(() => {
@@ -1430,13 +1806,7 @@ function responseJSON(obj) {
             }, 1000);
 
             // Populate Form Default Values
-            document.getElementById('cfgJamMasuk').value = appState.settings.jamMasuk;
-            document.getElementById('cfgJamPulang').value = appState.settings.jamPulang;
-            document.getElementById('cfgToleransi').value = appState.settings.toleransiMenit;
-            document.getElementById('cfgOfficeSubnet').value = appState.settings.officeSubnet;
-            if (appState.settings.gasUrl) {
-                document.getElementById('cfgGasUrl').value = appState.settings.gasUrl;
-            }
+            reflectSettingsToUI();
 
             // Start Camera & Network Check
             initCameraAndModels();
@@ -1445,9 +1815,15 @@ function responseJSON(obj) {
             renderAttendanceLogs();
             updateDashboardStats();
 
-            // Auto-fetch data from Google Spreadsheet if URL exists
+            // PERBAIKAN UTAMA: sebelumnya aplikasi TIDAK PERNAH mengambil data
+            // karyawan/log/pengaturan dari Google Spreadsheet saat dibuka -- semua
+            // data karyawan hanya hidup di memori browser dan hilang setiap refresh
+            // atau berbeda antar perangkat kiosk. Sekarang jika URL GAS sudah
+            // diatur, data awal langsung ditarik dari Spreadsheet (sumber data utama).
             if (appState.settings.gasUrl) {
-                await fetchDatabaseFromGAS();
+                fetchInitialDataFromBackend(false);
+            } else {
+                setDbSyncStatus('idle', 'URL GAS belum diatur');
             }
         });
     </script>
