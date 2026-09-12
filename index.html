@@ -103,6 +103,12 @@
 
             <!-- Navigation Actions -->
             <div class="flex items-center gap-2">
+                <!-- Database Connection Status Badge -->
+                <div id="headerDbBadge" class="hidden md:flex items-center gap-1.5 bg-slate-900 border border-slate-800 text-xs px-3 py-2 rounded-xl">
+                    <span id="headerDbDot" class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
+                    <span id="headerDbText" class="text-slate-400 font-medium">Database: Offline</span>
+                </div>
+
                 <button onclick="openRegistrationModal()" class="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2 rounded-xl text-sm font-medium transition border border-slate-700">
                     <i data-lucide="user-plus" class="w-4 h-4 text-blue-400"></i>
                     <span>Daftar Karyawan</span>
@@ -232,6 +238,10 @@
                     <p class="text-xs text-slate-400 mt-1">Kelola Pengaturan Jam Kerja, Jaringan Wi-Fi, Data Karyawan & Rekap Presensi</p>
                 </div>
                 <div class="flex items-center gap-2">
+                    <button onclick="testAndSyncSpreadsheet()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition shadow-lg shadow-emerald-600/20">
+                        <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                        <span>Tarik Data Spreadsheet</span>
+                    </button>
                     <button onclick="openScriptCodeModal()" class="bg-slate-800 hover:bg-slate-700 text-blue-400 px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 border border-slate-700 transition">
                         <i data-lucide="code-2" class="w-4 h-4"></i>
                         <span>Lihat Script Code.gs</span>
@@ -239,6 +249,25 @@
                     <button onclick="logoutAdmin()" class="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition">
                         <i data-lucide="log-out" class="w-4 h-4"></i>
                         <span>Keluar Admin</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Quick Database Connection Card Banner -->
+            <div class="glass-card p-4 rounded-2xl border border-blue-500/30 bg-blue-950/20 flex flex-col md:flex-row items-center justify-between gap-4">
+                <div class="flex items-center gap-3 w-full md:w-auto">
+                    <div class="p-3 bg-blue-600/20 rounded-xl text-blue-400 border border-blue-500/30 shrink-0">
+                        <i data-lucide="database" class="w-6 h-6"></i>
+                    </div>
+                    <div>
+                        <h4 class="font-bold text-sm text-white">Status Integrasi Google Spreadsheet API</h4>
+                        <p id="dbConnectionInfoText" class="text-xs text-slate-400">Belum terhubung. Masukkan URL Google Web App untuk mengaktifkan database online.</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 w-full md:w-auto justify-end">
+                    <button onclick="testAndSyncSpreadsheet()" class="w-full md:w-auto bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition">
+                        <i data-lucide="zap" class="w-4 h-4"></i>
+                        <span>Tes Koneksi Database</span>
                     </button>
                 </div>
             </div>
@@ -277,7 +306,7 @@
 
                         <div>
                             <label class="block text-slate-400 mb-1 font-medium">URL Web App Google Sheets (GAS)</label>
-                            <input type="url" id="cfgGasUrl" placeholder="https://script.google.com/macros/s/AKfycbzZpc2NUbf7AHpqeDG8kVBWLGYcDLRro-w0R1RqwfelWhBj8jsTBuJRsx8bA9rWqBGqFw/exec" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500">
+                            <input type="url" id="cfgGasUrl" placeholder="https://script.google.com/macros/s/.../exec" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500">
                         </div>
 
                         <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 rounded-xl transition flex items-center justify-center gap-2">
@@ -578,23 +607,178 @@
                 officeSubnet: "192.168.1", // Contoh IP Subnet Wi-Fi Kantor
                 gasUrl: ""
             },
-            employees: [
-                // Sample dummy employee
-                {
-                    nip: "EMP-1001",
-                    nama: "Budi Santoso",
-                    jabatan: "Software Engineer",
-                    registeredDate: "2026-01-15",
-                    descriptor: [0.12, -0.05, 0.33, 0.88, -0.42] // Mock descriptor embedding
-                }
-            ],
+            employees: [],
             logs: [],
             detectedLocalIp: "192.168.1.105", // Simulated local network IP
             isWifiValid: true,
+            isDbConnected: false,
             tempFaceDescriptor: null,
             tempPhotoBase64: null,
             modelsLoaded: false
         };
+
+        /* ==========================================================================
+           PERSISTENCE & LOCALSTORAGE MANAGEMENT
+           ========================================================================== */
+        function loadSavedState() {
+            try {
+                const savedGasUrl = localStorage.getItem('absensi_gas_url');
+                if (savedGasUrl) {
+                    appState.settings.gasUrl = savedGasUrl;
+                }
+
+                const savedSettings = localStorage.getItem('absensi_settings');
+                if (savedSettings) {
+                    appState.settings = { ...appState.settings, ...JSON.parse(savedSettings) };
+                }
+
+                const savedCreds = localStorage.getItem('absensi_admin_creds');
+                if (savedCreds) {
+                    appState.adminCreds = JSON.parse(savedCreds);
+                }
+            } catch (e) {
+                console.warn('Gagal memuat state dari localStorage:', e);
+            }
+        }
+
+        function saveStateToLocal() {
+            try {
+                localStorage.setItem('absensi_gas_url', appState.settings.gasUrl);
+                localStorage.setItem('absensi_settings', JSON.stringify(appState.settings));
+                localStorage.setItem('absensi_admin_creds', JSON.stringify(appState.adminCreds));
+            } catch (e) {
+                console.warn('Gagal menyimpan state ke localStorage:', e);
+            }
+        }
+
+        /* ==========================================================================
+           GOOGLE SPREADSHEET DATABASE SYNC ENGINE
+           ========================================================================== */
+        async function fetchDatabaseFromGAS() {
+            if (!appState.settings.gasUrl) {
+                updateDbConnectionStatus(false, "URL Web App belum diisi di Pengaturan.");
+                return false;
+            }
+
+            const dbSyncStatus = document.getElementById('dbSyncStatus');
+            if (dbSyncStatus) {
+                dbSyncStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-500 animate-ping"></span> Menghubungkan...`;
+            }
+
+            try {
+                const fetchUrl = `${appState.settings.gasUrl}?action=getInitialData&t=${Date.now()}`;
+                const response = await fetch(fetchUrl);
+                
+                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+                
+                const result = await response.json();
+
+                if (result.status === "success") {
+                    if (Array.isArray(result.employees) && result.employees.length > 0) {
+                        appState.employees = result.employees;
+                    }
+                    if (Array.isArray(result.logs)) {
+                        appState.logs = result.logs;
+                    }
+                    if (result.settings && typeof result.settings === 'object') {
+                        if (result.settings.jamMasuk) appState.settings.jamMasuk = result.settings.jamMasuk;
+                        if (result.settings.jamPulang) appState.settings.jamPulang = result.settings.jamPulang;
+                        if (result.settings.toleransiMenit) appState.settings.toleransiMenit = result.settings.toleransiMenit;
+                        if (result.settings.officeSubnet) appState.settings.officeSubnet = result.settings.officeSubnet;
+                    }
+
+                    updateDbConnectionStatus(true, `Terhubung dengan Google Spreadsheet (${appState.employees.length} Karyawan, ${appState.logs.length} Log)`);
+                    renderEmployeeList();
+                    renderAttendanceLogs();
+                    updateDashboardStats();
+                    saveStateToLocal();
+                    return true;
+                } else {
+                    throw new Error(result.message || "Gagal mengambil data dari Spreadsheet");
+                }
+            } catch (err) {
+                console.error("Kesalahan koneksi Google Spreadsheet:", err);
+                updateDbConnectionStatus(false, `Gagal terkoneksi: ${err.message}. Pastikan akses Web App diset ke "Anyone".`);
+                return false;
+            }
+        }
+
+        async function postToGAS(action, payloadData) {
+            if (!appState.settings.gasUrl) return null;
+
+            try {
+                const response = await fetch(appState.settings.gasUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({ action: action, data: payloadData })
+                });
+                return response;
+            } catch (err) {
+                console.error(`Gagal mengirim aksi '${action}' ke Google Apps Script:`, err);
+                return null;
+            }
+        }
+
+        function updateDbConnectionStatus(isConnected, message) {
+            appState.isDbConnected = isConnected;
+
+            const dbSyncStatus = document.getElementById('dbSyncStatus');
+            const infoText = document.getElementById('dbConnectionInfoText');
+            const headerDbBadge = document.getElementById('headerDbBadge');
+            const headerDbDot = document.getElementById('headerDbDot');
+            const headerDbText = document.getElementById('headerDbText');
+
+            if (isConnected) {
+                if (dbSyncStatus) {
+                    dbSyncStatus.className = 'text-emerald-400 flex items-center gap-1';
+                    dbSyncStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500"></span> Spreadsheet Terhubung`;
+                }
+                if (infoText) {
+                    infoText.innerText = message;
+                    infoText.className = "text-xs text-emerald-400 font-medium";
+                }
+                if (headerDbBadge) headerDbBadge.classList.remove('hidden');
+                if (headerDbDot) headerDbDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse";
+                if (headerDbText) {
+                    headerDbText.innerText = "Spreadsheet: Online";
+                    headerDbText.className = "text-emerald-400 font-semibold";
+                }
+            } else {
+                if (dbSyncStatus) {
+                    dbSyncStatus.className = 'text-rose-400 flex items-center gap-1';
+                    dbSyncStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-500"></span> Belum Terhubung`;
+                }
+                if (infoText) {
+                    infoText.innerText = message;
+                    infoText.className = "text-xs text-rose-400";
+                }
+                if (headerDbBadge) headerDbBadge.classList.remove('hidden');
+                if (headerDbDot) headerDbDot.className = "w-2.5 h-2.5 rounded-full bg-rose-500";
+                if (headerDbText) {
+                    headerDbText.innerText = "Spreadsheet: Offline";
+                    headerDbText.className = "text-rose-400 font-semibold";
+                }
+            }
+        }
+
+        async function testAndSyncSpreadsheet() {
+            const urlInput = document.getElementById('cfgGasUrl');
+            if (urlInput && urlInput.value.trim()) {
+                appState.settings.gasUrl = urlInput.value.trim();
+            }
+
+            if (!appState.settings.gasUrl) {
+                alert('Silakan masukkan URL Web App Google Sheets di menu Pengaturan Sistem!');
+                return;
+            }
+
+            const success = await fetchDatabaseFromGAS();
+            if (success) {
+                alert('✓ Berhasil terhubung dan memuat data dari Google Spreadsheet!');
+            } else {
+                alert('❌ Gagal terhubung ke Google Spreadsheet! Periksa kembali URL dan pastikan Deployment diset untuk "Anyone".');
+            }
+        }
 
         /* ==========================================================================
            NETWORK & LOCAL WI-FI IP DETECTION
@@ -817,7 +1001,6 @@
 
                 // Determine Attendance Status based on Working Hours
                 const now = new Date();
-                const currentFormattedTime = now.toTimeString().substring(0, 5); // HH:mm
                 const dateStr = now.toISOString().split('T')[0];
 
                 const jamMasuk = appState.settings.jamMasuk;
@@ -843,7 +1026,7 @@
                 }
 
                 const newLog = {
-                    id: Date.now(),
+                    id: "LOG-" + Date.now(),
                     tanggal: dateStr,
                     waktu: now.toLocaleTimeString('id-ID'),
                     nip: matchedEmployee.nip,
@@ -858,7 +1041,7 @@
                 updateDashboardStats();
 
                 // Send data to Google Spreadsheet Web App if URL configured
-                syncLogToGoogleSheet(newLog);
+                await postToGAS('clockIn', newLog);
 
                 // Show Success Result
                 resultBox.innerHTML = `
@@ -872,22 +1055,6 @@
                 lucide.createIcons();
 
             }, 1800);
-        }
-
-        async function syncLogToGoogleSheet(logData) {
-            if (!appState.settings.gasUrl) return;
-
-            try {
-                const response = await fetch(appState.settings.gasUrl, {
-                    method: 'POST',
-                    mode: 'no-cors',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'clockIn', data: logData })
-                });
-                console.log('Presensi tersinkron ke Google Spreadsheet');
-            } catch (err) {
-                console.error('Gagal mentransfer data ke Google Apps Script:', err);
-            }
         }
 
         /* ==========================================================================
@@ -948,6 +1115,11 @@
             const nip = document.getElementById('regNip').value.trim();
             const nama = document.getElementById('regNama').value.trim();
             const jabatan = document.getElementById('regJabatan').value.trim();
+        async function submitRegistration(e) {
+            e.preventDefault();
+            const nip = document.getElementById('regNip').value.trim();
+            const nama = document.getElementById('regNama').value.trim();
+            const jabatan = document.getElementById('regJabatan').value.trim();
 
             if (!appState.tempFaceDescriptor) {
                 alert('Silakan ambil snapshot wajah terlebih dahulu!');
@@ -969,15 +1141,10 @@
 
             // Sync employee registration to Google Sheet
             if (appState.settings.gasUrl) {
-                fetch(appState.settings.gasUrl, {
-                    method: 'POST',
-                    mode: 'no-cors',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'registerUser', data: newEmployee })
-                });
+                await postToGAS('registerUser', newEmployee);
             }
 
-            alert(`Karyawan ${nama} (${nip}) berhasil terdaftar!`);
+            alert(`Karyawan ${nama} (${nip}) berhasil terdaftar dan tersimpan ke sistem!`);
         }
 
         /* ==========================================================================
@@ -1036,21 +1203,28 @@
         /* ==========================================================================
            SETTINGS & ADMIN CREDENTIALS CUSTOMIZATION
            ========================================================================== */
-        function saveSystemSettings(e) {
+        async function saveSystemSettings(e) {
             e.preventDefault();
             appState.settings.jamMasuk = document.getElementById('cfgJamMasuk').value;
             appState.settings.jamPulang = document.getElementById('cfgJamPulang').value;
             appState.settings.toleransiMenit = document.getElementById('cfgToleransi').value;
             appState.settings.officeSubnet = document.getElementById('cfgOfficeSubnet').value;
-            appState.settings.gasUrl = document.getElementById('cfgGasUrl').value;
+            appState.settings.gasUrl = document.getElementById('cfgGasUrl').value.trim();
 
             // Update Header & Info Boxes
             document.getElementById('infoJamMasuk').innerText = `${appState.settings.jamMasuk} WIB`;
             document.getElementById('infoJamPulang').innerText = `${appState.settings.jamPulang} WIB`;
             document.getElementById('infoToleransi').innerText = `${appState.settings.toleransiMenit} Menit`;
 
+            saveStateToLocal();
             validateOfficeWifiNetwork();
-            alert('Pengaturan jam kerja dan subnet Wi-Fi kantor berhasil diperbarui!');
+
+            if (appState.settings.gasUrl) {
+                await postToGAS('saveSettings', appState.settings);
+                await fetchDatabaseFromGAS();
+            }
+
+            alert('Pengaturan jam kerja, Wi-Fi kantor & database berhasil disimpan!');
         }
 
         function updateAdminCredentials(e) {
@@ -1066,6 +1240,7 @@
 
             appState.adminCreds.username = newU;
             appState.adminCreds.password = newP;
+            saveStateToLocal();
             alert('Kredensial Login Admin berhasil diperbarui!');
             document.getElementById('formAdminCreds').reset();
         }
@@ -1130,18 +1305,18 @@
                     <td class="p-3"><span class="text-emerald-400 font-medium text-[11px]">✓ Vector Stored</span></td>
                     <td class="p-3 text-slate-400 font-mono">${emp.registeredDate}</td>
                     <td class="p-3">
-                        <button onclick="deleteEmployee(${index})" class="text-rose-400 hover:text-rose-300 p-1"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
-                    </td>
-                </tr>
-            `).join('');
-            lucide.createIcons();
-        }
+        async function deleteEmployee(index) {
+            const emp = appState.employees[index];
+            if (!emp) return;
 
-        function deleteEmployee(index) {
-            if (confirm('Yakin ingin menghapus data karyawan ini?')) {
+            if (confirm(`Yakin ingin menghapus karyawan ${emp.nama} (${emp.nip})?`)) {
                 appState.employees.splice(index, 1);
                 renderEmployeeList();
                 updateDashboardStats();
+
+                if (appState.settings.gasUrl) {
+                    await postToGAS('deleteUser', { nip: emp.nip });
+                }
             }
         }
 
@@ -1244,9 +1419,10 @@ function responseJSON(obj) {
         /* ==========================================================================
            APPLICATION INITIALIZATION
            ========================================================================== */
-        window.addEventListener('DOMContentLoaded', () => {
+        window.addEventListener('DOMContentLoaded', async () => {
             lucide.createIcons();
-            
+            loadSavedState();
+
             // Real-time Clock
             setInterval(() => {
                 const now = new Date();
@@ -1258,6 +1434,9 @@ function responseJSON(obj) {
             document.getElementById('cfgJamPulang').value = appState.settings.jamPulang;
             document.getElementById('cfgToleransi').value = appState.settings.toleransiMenit;
             document.getElementById('cfgOfficeSubnet').value = appState.settings.officeSubnet;
+            if (appState.settings.gasUrl) {
+                document.getElementById('cfgGasUrl').value = appState.settings.gasUrl;
+            }
 
             // Start Camera & Network Check
             initCameraAndModels();
@@ -1265,6 +1444,11 @@ function responseJSON(obj) {
             renderEmployeeList();
             renderAttendanceLogs();
             updateDashboardStats();
+
+            // Auto-fetch data from Google Spreadsheet if URL exists
+            if (appState.settings.gasUrl) {
+                await fetchDatabaseFromGAS();
+            }
         });
     </script>
 </body>
