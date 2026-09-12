@@ -438,6 +438,9 @@
             </div>
 
             <form id="formRegister" onsubmit="submitRegistration(event)" class="p-5 space-y-4 text-xs">
+                <div id="regGasWarning" class="hidden bg-amber-500/10 border border-amber-500/30 text-amber-300 p-3 rounded-xl text-[11px]">
+                    ⚠️ URL Web App Google Apps Script (GAS) belum diatur. Data pendaftaran <strong>tidak akan tersimpan</strong> ke Spreadsheet sampai Anda mengisinya di Panel Admin &gt; Pengaturan Sistem.
+                </div>
                 <div class="grid grid-cols-2 gap-3">
                     <div>
                         <label class="block text-slate-400 mb-1 font-medium">NIP / ID Karyawan</label>
@@ -1044,7 +1047,17 @@
         async function openRegistrationModal() {
             document.getElementById('modalRegistration').classList.remove('hidden');
             const regWebcam = document.getElementById('regWebcam');
-            
+
+            // Peringatan lebih awal: beri tahu sejak modal dibuka jika URL GAS
+            // belum diatur, supaya tidak perlu isi form & ambil foto dulu baru
+            // tahu pendaftaran pasti gagal.
+            const gasWarning = document.getElementById('regGasWarning');
+            if (!appState.settings.gasUrl) {
+                gasWarning.classList.remove('hidden');
+            } else {
+                gasWarning.classList.add('hidden');
+            }
+
             try {
                 regVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
                 regWebcam.srcObject = regVideoStream;
