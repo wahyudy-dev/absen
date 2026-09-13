@@ -720,6 +720,29 @@
            didukung Apps Script Web App) namun tetap bisa memakai mode default (cors),
            sehingga responsnya bisa dibaca untuk mengetahui sukses/gagal.
            ========================================================================== */
+        /**
+         * Membaca response fetch dengan aman: baca sebagai teks dulu, baru coba
+         * parse JSON. Kalau ternyata bukan JSON (paling sering karena Google
+         * mengembalikan halaman HTML login/izin, bukan hasil dari script kita),
+         * beri pesan yang jelas -- bukan lagi error kriptis semacam
+         * "Unexpected token '<' ... is not valid JSON" yang tidak menjelaskan
+         * apa-apa ke pengguna.
+         * Penyebab paling umum: deployment Web App belum diatur "Who has
+         * access: Anyone", sehingga Google mencegat request dengan halaman
+         * login sebelum sampai ke Code.gs.
+         */
+        async function parseBackendResponse(response) {
+            const rawText = await response.text();
+            try {
+                return JSON.parse(rawText);
+            } catch (err) {
+                if (rawText.trim().startsWith('<')) {
+                    throw new Error('Backend GAS mengembalikan halaman HTML, bukan data (biasanya karena deployment Web App belum diatur ke "Anyone"). Buka Apps Script > Deploy > Manage deployments, pastikan "Who has access" = Anyone, lalu deploy ulang sebagai versi baru.');
+                }
+                throw new Error('Respons dari backend GAS tidak bisa dibaca: ' + err.message);
+            }
+        }
+
         async function postToBackend(action, data) {
             const gasUrl = (appState.settings.gasUrl || "").trim();
             if (!gasUrl) {
@@ -732,7 +755,7 @@
                 body: JSON.stringify({ action, data })
             });
 
-            const result = await response.json();
+            const result = await parseBackendResponse(response);
             if (result.status !== 'success') {
                 throw new Error(result.message || 'Backend mengembalikan status error.');
             }
@@ -772,7 +795,7 @@
             try {
                 const url = gasUrl + (gasUrl.includes('?') ? '&' : '?') + 'action=getInitialData';
                 const response = await fetch(url, { method: 'GET' });
-                const result = await response.json();
+                const result = await parseBackendResponse(response);
 
                 if (result.status !== 'success') {
                     throw new Error(result.message || 'Gagal memuat data dari Spreadsheet.');
