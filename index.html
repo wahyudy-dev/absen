@@ -923,64 +923,94 @@
             }, 300);
         }
 
+        /**
+         * PERBAIKAN PENTING (akurasi vector wajah):
+         * Sebelumnya, kalau model AI wajah gagal dimuat ATAU wajah tidak
+         * terdeteksi dengan jelas oleh face-api, sistem DIAM-DIAM memakai
+         * "vector cadangan" yang sangat kasar -- hanya rata-rata kecerahan
+         * warna merah per 16 potongan horizontal gambar, BUKAN vector wajah
+         * sungguhan. Ini sangat tidak akurat:
+         *  - Dua orang berbeda dengan pencahayaan/latar mirip bisa dianggap
+         *    SAMA (celah keamanan).
+         *  - Orang yang sama di pencahayaan berbeda bisa dianggap BERBEDA
+         *    (gagal absen padahal orangnya benar).
+         * Sekarang fungsi ini WAJIB menghasilkan vector wajah asli (128 dimensi
+         * dari face-api.js). Jika model belum siap atau wajah tidak terdeteksi
+         * jelas, fungsi ini melempar Error -- pemanggil (registrasi & absen)
+         * WAJIB menampilkan error ini ke pengguna, bukan melanjutkan proses
+         * dengan vector palsu.
+         */
         async function extractFaceDescriptorFromVideo(video) {
-            if (appState.modelsLoaded) {
-                const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptor();
-                if (detection) {
-                    return Array.from(detection.descriptor);
-                }
+            if (!appState.modelsLoaded) {
+                throw new Error('Model AI pengenalan wajah belum siap/gagal dimuat. Tunggu beberapa saat lalu coba lagi, atau muat ulang halaman.');
             }
 
-            // High-precision canvas biometric fallback calculation
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = 100;
-            tempCanvas.height = 100;
-            const tempCtx = tempCanvas.getContext('2d');
-            tempCtx.drawImage(video, 0, 0, 100, 100);
-            
-            const imgData = tempCtx.getImageData(0, 0, 100, 100).data;
-            let mockDescriptor = [];
-            for(let i = 0; i < 16; i++) {
-                let sum = 0;
-                for(let j = i*100; j < (i+1)*100; j++) {
-                    sum += imgData[j * 4] || 0;
-                }
-                mockDescriptor.push(Number((sum / 100000).toFixed(4)));
+            const detection = await faceapi
+                .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+
+            if (!detection || !detection.descriptor) {
+                throw new Error('Wajah tidak terdeteksi dengan jelas. Pastikan pencahayaan cukup, wajah menghadap kamera, dan hanya ada satu wajah di dalam frame, lalu coba lagi.');
             }
-            return mockDescriptor;
+
+            return Array.from(detection.descriptor);
         }
 
+        // Panjang vector wajah asli dari face-api.js (FaceRecognitionNet) selalu 128.
+        const FACE_DESCRIPTOR_LENGTH = 128;
+
+        // Ambang batas jarak Euclidean untuk dianggap "wajah yang sama". Semakin
+        // KECIL nilainya, semakin KETAT pencocokannya (lebih sedikit salah-kenali,
+        // tapi bisa lebih sering menolak wajah asli kalau kondisi kamera buruk).
+        // 0.6 adalah nilai umum/longgar yang dipakai komunitas face-api.js;
+        // di sini dipakai 0.5 (lebih ketat) sesuai permintaan agar wajah yang
+        // tidak benar-benar cocok akan gagal absen.
+        const FACE_MATCH_THRESHOLD = 0.5;
+
         function findMatchingEmployee(descriptor) {
-            if (!descriptor || appState.employees.length === 0) return null;
+            if (!descriptor || descriptor.length !== FACE_DESCRIPTOR_LENGTH || appState.employees.length === 0) {
+                return null;
+            }
 
             let bestMatch = null;
-            let lowestDistance = 1.0;
+            let lowestDistance = Infinity;
 
             appState.employees.forEach(emp => {
-                if (emp.descriptor && Array.isArray(emp.descriptor)) {
-                    // Calculate Euclidean distance between face embeddings
-                    let dist = 0;
-                    const len = Math.min(emp.descriptor.length, descriptor.length);
-                    for (let i = 0; i < len; i++) {
-                        dist += Math.pow(emp.descriptor[i] - descriptor[i], 2);
-                    }
-                    dist = Math.sqrt(dist);
+                if (!emp.descriptor || !Array.isArray(emp.descriptor)) return;
 
-                    if (dist < lowestDistance) {
-                        lowestDistance = dist;
-                        bestMatch = emp;
-                    }
+                // PERBAIKAN: sebelumnya jika panjang vector karyawan berbeda dari
+                // vector hasil scan (mis. karyawan lama terlanjur terdaftar pakai
+                // vector cadangan 16 dimensi yang tidak akurat), kode tetap
+                // memaksakan perbandingan sebagian (Math.min panjang) yang hasilnya
+                // tidak berarti apa-apa dan bisa memicu salah kenali. Sekarang
+                // vector dengan panjang tidak sesuai (bukan 128 dimensi asli)
+                // langsung dilewati/ditolak.
+                if (emp.descriptor.length !== FACE_DESCRIPTOR_LENGTH) {
+                    console.warn(`Vector wajah milik ${emp.nama} (${emp.nip}) tidak valid (panjang ${emp.descriptor.length}, seharusnya ${FACE_DESCRIPTOR_LENGTH}). Karyawan ini perlu didaftarkan ulang wajahnya.`);
+                    return;
+                }
+
+                let sumSquared = 0;
+                for (let i = 0; i < FACE_DESCRIPTOR_LENGTH; i++) {
+                    sumSquared += Math.pow(emp.descriptor[i] - descriptor[i], 2);
+                }
+                const dist = Math.sqrt(sumSquared);
+
+                if (dist < lowestDistance) {
+                    lowestDistance = dist;
+                    bestMatch = emp;
                 }
             });
 
-            // Threshold tolerance for match validation.
-            // PERBAIKAN: sebelumnya kode ini SELALU mengembalikan appState.employees[0]
-            // (karyawan pertama di database) alih-alih `bestMatch` yang benar-benar
-            // dihitung di atas -- akibatnya wajah SIAPA PUN akan tercatat sebagai
-            // karyawan pertama selama ada minimal satu karyawan terdaftar.
-            // Kondisi "employees.length === 1 selalu lolos" juga dihapus karena itu
-            // berarti verifikasi wajah dilewati sepenuhnya saat baru ada 1 karyawan.
-            if (bestMatch && lowestDistance < 0.65) {
+            // PERBAIKAN SEBELUMNYA: dulu kode ini SELALU mengembalikan
+            // appState.employees[0] (karyawan pertama di database) alih-alih
+            // `bestMatch` yang benar-benar dihitung di atas -- akibatnya wajah
+            // SIAPA PUN akan tercatat sebagai karyawan pertama. Sekarang
+            // mengembalikan bestMatch yang sebenarnya, dan HANYA jika jaraknya
+            // di bawah ambang batas ketat (FACE_MATCH_THRESHOLD) -- kalau tidak
+            // ada yang cukup dekat, absen ditolak (return null).
+            if (bestMatch && lowestDistance < FACE_MATCH_THRESHOLD) {
                 return bestMatch;
             }
             return null;
@@ -1014,8 +1044,31 @@
             lucide.createIcons();
 
             setTimeout(async () => {
-                const descriptor = await extractFaceDescriptorFromVideo(webcamElement);
-                const matchedEmployee = findMatchingEmployee(descriptor);
+                let matchedEmployee = null;
+                try {
+                    // PERBAIKAN: extractFaceDescriptorFromVideo sekarang melempar
+                    // Error yang jelas (model belum siap / wajah tidak terdeteksi)
+                    // alih-alih diam-diam memakai vector cadangan yang tidak akurat.
+                    // Error ini ditangani di sini dengan pesan yang berbeda dari
+                    // "wajah tidak dikenali", supaya penyebabnya jelas bagi pengguna.
+                    const descriptor = await extractFaceDescriptorFromVideo(webcamElement);
+                    matchedEmployee = findMatchingEmployee(descriptor);
+                } catch (err) {
+                    scanAnimation.classList.add('hidden');
+                    btnScan.disabled = false;
+                    btnScan.innerHTML = `<i data-lucide="camera" class="w-4 h-4"></i><span>Absen Wajah Sekarang</span>`;
+                    lucide.createIcons();
+
+                    resultBox.innerHTML = `
+                        <div class="w-12 h-12 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center mb-2">
+                            <i data-lucide="scan-face" class="w-6 h-6"></i>
+                        </div>
+                        <h4 class="font-bold text-amber-400 text-sm">Deteksi Wajah Gagal</h4>
+                        <p class="text-xs text-slate-400 mt-1">${err.message}</p>
+                    `;
+                    lucide.createIcons();
+                    return;
+                }
 
                 scanAnimation.classList.add('hidden');
                 btnScan.disabled = false;
@@ -1169,13 +1222,28 @@
 
             statusText.innerText = "Mengekstrak ciri khusus wajah...";
             statusText.className = "text-[11px] text-blue-400";
+            btnSubmit.disabled = true;
 
-            appState.tempFaceDescriptor = await extractFaceDescriptorFromVideo(regWebcam);
-            appState.tempPhotoBase64 = base64Photo;
+            try {
+                // PERBAIKAN: extractFaceDescriptorFromVideo sekarang melempar Error
+                // yang jelas kalau model belum siap / wajah tidak terdeteksi --
+                // sebelumnya kode ini diam-diam menerima vector cadangan yang tidak
+                // akurat, sehingga karyawan bisa "berhasil" terdaftar dengan wajah
+                // yang sebenarnya tidak pernah benar-benar terdeteksi dengan baik.
+                const descriptor = await extractFaceDescriptorFromVideo(regWebcam);
+                appState.tempFaceDescriptor = descriptor;
+                appState.tempPhotoBase64 = base64Photo;
 
-            statusText.innerText = "✓ Vektor wajah berhasil direkam!";
-            statusText.className = "text-[11px] text-emerald-400 font-semibold";
-            btnSubmit.disabled = false;
+                statusText.innerText = "✓ Vektor wajah berhasil direkam!";
+                statusText.className = "text-[11px] text-emerald-400 font-semibold";
+                btnSubmit.disabled = false;
+            } catch (err) {
+                appState.tempFaceDescriptor = null;
+                regCapPreview.classList.add('hidden');
+                statusText.innerText = "✗ " + err.message;
+                statusText.className = "text-[11px] text-rose-400 font-semibold";
+                btnSubmit.disabled = true;
+            }
         }
 
         async function submitRegistration(e) {
@@ -1186,6 +1254,13 @@
 
             if (!appState.tempFaceDescriptor) {
                 alert('Silakan ambil snapshot wajah terlebih dahulu!');
+                return;
+            }
+
+            // Lapis pengaman terakhir: pastikan vector yang akan disimpan benar-benar
+            // vector wajah asli (128 dimensi), bukan data cacat/format lama.
+            if (appState.tempFaceDescriptor.length !== FACE_DESCRIPTOR_LENGTH) {
+                alert('Vector wajah tidak valid. Silakan ambil ulang snapshot wajah sebelum mendaftar.');
                 return;
             }
 
