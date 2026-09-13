@@ -739,6 +739,28 @@
             return result;
         }
 
+        /**
+         * Lapisan pengaman tambahan di sisi frontend: pastikan nilai jam kerja
+         * selalu berbentuk teks "HH:mm" yang valid, apa pun bentuk mentah yang
+         * dikirim backend (termasuk format aneh peninggalan bug lama Google
+         * Sheets seperti "1899-12-30T02:07:48.000Z"). Perbaikan utamanya ada di
+         * Code.gs (fetchSettings), ini hanya jaring pengaman kalau backend belum
+         * sempat di-update atau ada data cache lama.
+         */
+        function sanitizeTimeString(value, fallback) {
+            if (typeof value === 'string') {
+                const hhmm = value.match(/^(\d{1,2}):(\d{2})/);
+                if (hhmm) {
+                    return hhmm[1].padStart(2, '0') + ':' + hhmm[2];
+                }
+                const isoTime = value.match(/T(\d{2}):(\d{2})/); // format ISO Date bawaan bug lama
+                if (isoTime) {
+                    return isoTime[1] + ':' + isoTime[2];
+                }
+            }
+            return fallback;
+        }
+
         async function fetchInitialDataFromBackend(showAlerts) {
             const gasUrl = (appState.settings.gasUrl || "").trim();
             if (!gasUrl) {
@@ -764,6 +786,13 @@
                     Object.assign(appState.settings, result.settings);
                     appState.settings.gasUrl = gasUrlLocal;
                     appState.settings.toleransiMenit = parseInt(appState.settings.toleransiMenit) || 0;
+                    // Lapisan pengaman tambahan: pastikan jamMasuk/jamPulang selalu
+                    // format "HH:mm" yang valid. Backend (Code.gs) sudah memperbaiki
+                    // bug Google Sheets yang mengonversi jam jadi objek Date aneh
+                    // (mis. "1899-12-30T02:07:48.000Z"), tapi ini jaga-jaga jika
+                    // ada data lama/cache yang belum sempat diperbaiki.
+                    appState.settings.jamMasuk = sanitizeTimeString(appState.settings.jamMasuk, "08:00");
+                    appState.settings.jamPulang = sanitizeTimeString(appState.settings.jamPulang, "17:00");
                     reflectSettingsToUI();
                 }
 
@@ -801,6 +830,8 @@
         }
 
         function reflectSettingsToUI() {
+            appState.settings.jamMasuk = sanitizeTimeString(appState.settings.jamMasuk, "08:00");
+            appState.settings.jamPulang = sanitizeTimeString(appState.settings.jamPulang, "17:00");
             document.getElementById('cfgJamMasuk').value = appState.settings.jamMasuk;
             document.getElementById('cfgJamPulang').value = appState.settings.jamPulang;
             document.getElementById('cfgToleransi').value = appState.settings.toleransiMenit;
@@ -1497,6 +1528,10 @@ function setupDatabase() {
   
   // 3. Inisialisasi Sheet Pengaturan dengan konfigurasi default
   var sheetPengaturan = getOrCreateSheet("Pengaturan", ["Kunci Pengaturan", "Nilai"]);
+  // Paksa kolom "Nilai" berformat teks biasa -- mencegah Google Sheets otomatis
+  // mengubah nilai seperti "08:00" menjadi objek Date/waktu internal (yang
+  // menyebabkan tampilan aneh "1899-12-30T...Z" di aplikasi).
+  sheetPengaturan.getRange("B2:B").setNumberFormat('@');
   var rowsSettings = sheetPengaturan.getDataRange().getValues();
   if (rowsSettings.length <= 1) {
     sheetPengaturan.appendRow(["jamMasuk", "08:00"]);
@@ -1860,9 +1895,22 @@ function fetchSettings() {
   for (var i = 1; i < rows.length; i++) {
     var key = String(rows[i][0]).trim();
     var val = rows[i][1];
-    if (key && val !== undefined) {
-      settings[key] = val;
+    if (!key || val === undefined || val === "") continue;
+
+    // PERBAIKAN: Google Sheets sering otomatis mengenali nilai seperti "08:00"
+    // sebagai JAM/WAKTU dan menyimpannya sebagai objek Date dengan tanggal
+    // dummy 1899-12-30. Saat dikirim sebagai JSON, ini muncul aneh seperti
+    // "1899-12-30T02:07:48.000Z" -- dan juga merusak perhitungan Terlambat di
+    // aplikasi karena bukan lagi teks "HH:mm". Kita ubah kembali ke "HH:mm",
+    // lalu langsung perbaiki sel-nya di Spreadsheet (format teks) agar tidak
+    // berubah menjadi Date lagi di kemudian hari.
+    if (val instanceof Date) {
+      var formatted = Utilities.formatDate(val, "Asia/Jakarta", "HH:mm");
+      sheet.getRange(i + 1, 2).setNumberFormat('@').setValue(formatted);
+      val = formatted;
     }
+
+    settings[key] = val;
   }
 
   // Pastikan toleransiMenit selalu berupa angka, walau tersimpan sebagai teks
@@ -1879,19 +1927,27 @@ function processSaveSettings(data) {
 
   var sheet = getOrCreateSheet("Pengaturan", ["Kunci Pengaturan", "Nilai"]);
   var keys = Object.keys(data);
+  // Field yang berformat jam wajib dipaksa jadi teks biasa, supaya Google
+  // Sheets tidak otomatis mengonversinya menjadi objek Date/waktu.
+  var timeFields = { jamMasuk: true, jamPulang: true };
 
   keys.forEach(function(key) {
     var rows = sheet.getDataRange().getValues();
     var found = false;
     for (var i = 1; i < rows.length; i++) {
       if (rows[i][0] == key) {
-        sheet.getRange(i + 1, 2).setValue(data[key]);
+        var cell = sheet.getRange(i + 1, 2);
+        if (timeFields[key]) cell.setNumberFormat('@');
+        cell.setValue(data[key]);
         found = true;
         break;
       }
     }
     if (!found) {
       sheet.appendRow([key, data[key]]);
+      if (timeFields[key]) {
+        sheet.getRange(sheet.getLastRow(), 2).setNumberFormat('@').setValue(data[key]);
+      }
     }
   });
 
